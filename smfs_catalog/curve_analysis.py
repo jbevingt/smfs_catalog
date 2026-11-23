@@ -430,7 +430,7 @@ def analyse_curve(
     _ensemble = _ensemble_in_force()
 
     def _put_own_transform(slope: float, failed: bool = False) -> None:
-        if code_ver is None or file_id is None:
+        if not can_cache:
             return
         if failed and usable_instrument(curve.inv_ols_nm_v):
             return

@@ -3057,38 +3057,52 @@ class OwnTransformRow:
     code_version: str
 
 
+def _own_transform_is_current(c: sqlite3.Connection, row: OwnTransformRow) -> bool:
+    """True when no write is needed: an ensemble is in force for the file, or
+    the stored row already equals `row` (NULL equals NULL).  Takes no lock."""
+    if ensemble_divisors([row.file_id], conn=c).get(row.file_id) is not None:
+        return True
+    stored = c.execute(
+        "SELECT value, params_json, code_version FROM analysis_results "
+        "WHERE file_id = ? AND analysis_type = ?",
+        (row.file_id, TRANSFORM_KEY)).fetchall()
+    return bool(stored) and tuple(stored[0]) == (
+        row.value, row.params_json, row.code_version)
+
+
 def write_own_transform_unless_ensemble(
     row: OwnTransformRow,
     db_path: str = DEFAULT_DB_PATH,
     conn: Optional[sqlite3.Connection] = None,
 ) -> bool:
     """Upsert a file's own Transform InvOLS row unless an ensemble is in force
-    for it, the check and the write in one write transaction so an apply
-    landing in between cannot be overwritten.  True when the row was written.
-    A transaction the caller already has open is neither opened nor committed
-    here: it already holds the write lock, and its owner commits it."""
+    for it or the row is already stored as given.  The first check takes no
+    lock, so a fully cached view never waits on a writer.  Only when a write
+    is needed does it open its own write transaction, re-check inside it so an
+    apply landing in between cannot be overwritten, write and commit.  A
+    caller that already has a transaction open gets sqlite3.OperationalError
+    from that BEGIN, and nothing changes.  True when the row was written."""
     c = conn or get_connection(db_path)
-    owns_transaction = not c.in_transaction
     try:
-        if owns_transaction:
-            c.execute("BEGIN IMMEDIATE")
-        if ensemble_divisors([row.file_id], conn=c).get(row.file_id) is not None:
-            wrote = False
-        else:
-            c.execute(
-                "INSERT OR REPLACE INTO analysis_results (file_id, analysis_type, "
-                "value, params_json, code_version, computed_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (row.file_id, TRANSFORM_KEY, row.value, row.params_json,
-                 row.code_version, _now()))
-            wrote = True
-        if owns_transaction:
+        if _own_transform_is_current(c, row):
+            return False
+        c.execute("BEGIN IMMEDIATE")
+        try:
+            if ensemble_divisors([row.file_id], conn=c).get(row.file_id) is not None:
+                wrote = False
+            else:
+                c.execute(
+                    "INSERT OR REPLACE INTO analysis_results (file_id, "
+                    "analysis_type, value, params_json, code_version, computed_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?)",
+                    (row.file_id, TRANSFORM_KEY, row.value, row.params_json,
+                     row.code_version, _now()))
+                wrote = True
             c.commit()
-        return wrote
-    except Exception:
-        if owns_transaction:
+            return wrote
+        except Exception:
             c.rollback()
-        raise
+            raise
     finally:
         if conn is None:
             c.close()
