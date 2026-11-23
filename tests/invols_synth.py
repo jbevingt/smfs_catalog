@@ -14,12 +14,14 @@ Rows are written with plain SQL, not through the helpers under test, so a test
 of those helpers does not stand on them.  Every function takes the catalog path
 explicitly; nothing here ever touches the app's own catalog.
 
-(A synthetic ForceCurve builder joins this module with the transform-path
-tests.)
+make_force_curve builds a synthetic ForceCurve: a noiseless linear approach
+contact of a known slope and a retract with one rupture.
 """
 import json
 import os
 import sqlite3
+
+import numpy as np
 
 from smfs_catalog import db
 
@@ -77,11 +79,12 @@ def _add_file(con, number, spec):
     return file_id
 
 
-def _add_result(con, file_id, analysis_type, value, params_json):
+def _add_result(con, file_id, analysis_type, value, params_json,
+                code_version=CODE):
     con.execute(
         "INSERT INTO analysis_results (file_id, analysis_type, value, "
         "params_json, code_version, computed_at) VALUES (?, ?, ?, ?, ?, 'x')",
-        (file_id, analysis_type, value, params_json, CODE))
+        (file_id, analysis_type, value, params_json, code_version))
 
 
 def add_group(db_path, file_ids, transform_nm_v, average="arithmetic"):
@@ -156,7 +159,8 @@ def add_other_rows(db_path, file_id):
         con.close()
 
 
-def put_result(db_path, file_id, analysis_type, value, params_json="{}"):
+def put_result(db_path, file_id, analysis_type, value, params_json="{}",
+               code_version=CODE):
     """Write one analysis_results row with plain SQL, replacing any row the file
     already has of that type (the table keeps one per file and type)."""
     con = sqlite3.connect(db_path)
@@ -164,7 +168,8 @@ def put_result(db_path, file_id, analysis_type, value, params_json="{}"):
         with con:
             con.execute("DELETE FROM analysis_results WHERE file_id = ? AND "
                         "analysis_type = ?", (file_id, analysis_type))
-            _add_result(con, file_id, analysis_type, value, params_json)
+            _add_result(con, file_id, analysis_type, value, params_json,
+                        code_version)
     finally:
         con.close()
 
@@ -231,3 +236,52 @@ def fetch(db_path, sql, params=()):
         return con.execute(sql, params).fetchall()
     finally:
         con.close()
+
+
+# ── a synthetic force curve ──────────────────────────────────────────────────
+
+_POINTS = 3000          # per approach and per retract; 0.2 nm of piezo each
+_TRAVEL_NM = 600.0
+_CONTACT_NM = 200.0     # piezo position of the contact point
+_PULL_START_NM = 320.0  # the tether pull begins here (past the post-snap-off mask)
+_PULL_END_NM = 420.0    # ... and ruptures here (before the baseline region)
+_PULL_DEPTH_NM = 80.0   # deflection at the rupture, towards the surface
+
+
+def make_force_curve(slope=-0.95, instrument=199.14, deep_slope=None,
+                     deep_pts=200, spring_constant=10.0,
+                     path="synthetic.ibw"):
+    """A ForceCurve with a known approach contact slope and one rupture.
+
+    Approach: piezo falls from 600 nm to 0; free (noisy, seeded) down to the
+    contact point at 200 nm, then a noiseless line of slope `slope` (nm/nm).
+    With `deep_slope`, the last `deep_pts` approach samples follow that slope
+    instead, continuous at the join, so a fit window's value depends on where
+    it sits.  Retract: the contact line back out to the contact point, flat
+    noisy baseline, one tether pull from 320 nm that ruptures at 420 nm.
+    The instrument value travels on the curve as `inv_ols_nm_v`.
+    """
+    rng = np.random.default_rng(7)
+    piezo_appr = np.linspace(_TRAVEL_NM, 0.0, _POINTS)
+    piezo_retr = np.linspace(0.0, _TRAVEL_NM, _POINTS)
+    defl_appr = np.where(piezo_appr < _CONTACT_NM,
+                         slope * (piezo_appr - _CONTACT_NM), 0.0)
+    if deep_slope is not None:
+        join = piezo_appr[_POINTS - deep_pts]
+        deep = slope * (join - _CONTACT_NM) + deep_slope * (piezo_appr - join)
+        defl_appr = np.where(piezo_appr < join, deep, defl_appr)
+    defl_retr = np.where(piezo_retr < _CONTACT_NM,
+                         slope * (piezo_retr - _CONTACT_NM), 0.0)
+    pull = (piezo_retr >= _PULL_START_NM) & (piezo_retr < _PULL_END_NM)
+    ramp = (piezo_retr - _PULL_START_NM) / (_PULL_END_NM - _PULL_START_NM)
+    defl_retr = np.where(pull, -_PULL_DEPTH_NM * ramp, defl_retr)
+    defl_appr = defl_appr + np.where(piezo_appr >= _CONTACT_NM,
+                                     rng.normal(0.0, 0.4, _POINTS), 0.0)
+    defl_retr = defl_retr + np.where(piezo_retr >= _CONTACT_NM,
+                                     rng.normal(0.0, 0.4, _POINTS), 0.0)
+    from smfs_catalog.curve_loader import ForceCurve
+    return ForceCurve(
+        path=path, piezo_appr=piezo_appr, defl_appr=defl_appr,
+        piezo_retr=piezo_retr, defl_retr=defl_retr,
+        spring_constant=spring_constant, sample_rate_hz=20000.0,
+        inv_ols_nm_v=instrument)
