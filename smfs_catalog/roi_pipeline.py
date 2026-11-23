@@ -37,6 +37,7 @@ from .models import CHAIN_MODEL_BY_IDX
 from .muggeo_segmented import RESTARTS as MUGGEO_RESTARTS
 from .muggeo_segmented import TOLERANCES as MUGGEO_TOLERANCES
 from .rupture_algorithms import RUPTURE_ALGORITHM_BY_IDX
+from .invols_stats import resolve_divisor
 from .provenance import cache_version
 from .roi_selection import (
     ReportedSegmentChoice,
@@ -313,6 +314,7 @@ def compute_curve_events_coords(
     # ONE owner — assembled from two profiles, a "match" certifies a parameter
     # set nobody chose.  See event_params_from/db.load_analysis_params.
     _pj = None
+    _divisor = None
     _cached_events = None
     if can_read_cache:
         _divisor = _db.ensemble_divisors([file_id], db_path, conn).get(file_id)
@@ -394,33 +396,35 @@ def compute_curve_events_coords(
 
     # ── invOLS ───────────────────────────────────────────────────────────────
     inv = None
-    if stage1 is not None and stage1.invols_slope is not None:
-        inv = stage1.invols_slope
-    else:
-        _cv = _cached("invols_slope", _p1.params_invols) if _p1 else None
-        if _cv is not None:
-            inv = float(_cv)
+    if _divisor is None:
+        if stage1 is not None and stage1.invols_slope is not None:
+            inv = stage1.invols_slope
         else:
-            try:
-                _fit = fit_approach_invols(
-                    dc.low_appr, curve.piezo_appr, ep.invols_offset_pts, ep.invols_window_pts,
-                )
-                inv = _fit.slope
-                # This is a real fresh computation (neither stage1 nor the DB
-                # cache had it).  Persist what you compute: write it and
-                # its QC diagnostics now, the same as
-                # curve_analysis.analyse_curve does, so the next caller (same
-                # params) gets a cache hit instead of re-fitting.
-                if _p1 is not None and inv == inv:   # not NaN
-                    _db.write_analysis_results_multi(file_id, {
-                        "invols_slope":      float(inv),
-                        "invols_intercept":  float(_fit.intercept),
-                        "invols_rms":        float(_fit.rms),
-                        "invols_fit_lo_idx": float(_fit.fit_lo_idx),
-                        "invols_fit_hi_idx": float(_fit.fit_hi_idx),
-                    }, _p1.params_invols, code_ver, db_path, conn=conn)
-            except Exception as exc:
-                raise CurveAnalysisError("approach invOLS", exc) from exc
+            _cv = _cached("invols_slope", _p1.params_invols) if _p1 else None
+            if _cv is not None:
+                inv = float(_cv)
+            else:
+                try:
+                    _fit = fit_approach_invols(
+                        dc.low_appr, curve.piezo_appr, ep.invols_offset_pts, ep.invols_window_pts,
+                    )
+                    inv = _fit.slope
+                    # This is a real fresh computation (neither stage1 nor the DB
+                    # cache had it).  Persist what you compute: write it and
+                    # its QC diagnostics now, the same as
+                    # curve_analysis.analyse_curve does, so the next caller (same
+                    # params) gets a cache hit instead of re-fitting.
+                    if _p1 is not None and inv == inv:   # not NaN
+                        _db.write_analysis_results_multi(file_id, {
+                            "invols_slope":      float(inv),
+                            "invols_intercept":  float(_fit.intercept),
+                            "invols_rms":        float(_fit.rms),
+                            "invols_fit_lo_idx": float(_fit.fit_lo_idx),
+                            "invols_fit_hi_idx": float(_fit.fit_hi_idx),
+                        }, _p1.params_invols, code_ver, db_path, conn=conn)
+                except Exception as exc:
+                    raise CurveAnalysisError("approach invOLS", exc) from exc
+    inv = resolve_divisor(inv, _divisor)
     if inv is None or not isinstance(inv, (int, float)) or not math.isfinite(inv) or inv == 0.0:
         raise CurveAnalysisError(
             "approach invOLS",
