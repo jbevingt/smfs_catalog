@@ -296,7 +296,7 @@ def lane(monkeypatch):
     state = SimpleNamespace(calls=[], hooks=[], persists=[], persist_hooks=[],
                             event=False)
 
-    def fake_analyse_curve(curve, p, *, db_path, code_ver, file_id, conn=None):
+    def fake_analyse_curve(curve, p, *, file_id, **kwargs):
         state.calls.append(file_id)
         if state.hooks:
             state.hooks.pop(0)()
