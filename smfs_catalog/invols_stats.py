@@ -111,6 +111,5 @@ def points_in_box(t: Sequence[float], y: Sequence[float],
 def box_cut_count(t: Sequence[float], y: Sequence[float],
                   box: tuple[float, float, float, float]) -> int:
     t0, t1, _, _ = box
-    t_arr = np.asarray(t, dtype=float)
-    in_span = (t_arr >= min(t0, t1)) & (t_arr <= max(t0, t1))
+    in_span = points_in_box(t, y, (t0, t1, -math.inf, math.inf))
     return int(np.count_nonzero(in_span & ~points_in_box(t, y, box)))
