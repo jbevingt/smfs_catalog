@@ -43,7 +43,7 @@ import numpy as np
 from . import db as _db
 from .analysis_params import AnalysisParams
 from .curve_loader import LoadError, UnusableCurveError, load_force_curve
-from .invols_stats import own_transform_nm_v
+from .invols_stats import own_transform_nm_v, usable_instrument
 from .provenance import cache_version
 
 
@@ -423,13 +423,22 @@ def analyse_curve(
     # unlike the event-only landmarks below, which are gated on a validated
     # event.
     # invols_r2 deliberately absent — same reason as baseline_r2 above.
-    _ensemble = (can_cache and
-                 _db.ensemble_divisors([file_id], db_path, conn).get(file_id) is not None)
+    def _ensemble_in_force() -> bool:
+        return (db_path is not None and file_id is not None and
+                _db.ensemble_divisors([file_id], db_path, conn).get(file_id) is not None)
 
-    def _put_own_transform(slope: float) -> None:
-        if not _ensemble:
-            _put("transform_invols_nm_v",
-                 own_transform_nm_v(curve.inv_ols_nm_v, slope), p.params_invols)
+    _ensemble = _ensemble_in_force()
+
+    def _put_own_transform(slope: float, failed: bool = False) -> None:
+        if code_ver is None or file_id is None:
+            return
+        if failed and usable_instrument(curve.inv_ols_nm_v):
+            return
+        _db.write_own_transform_unless_ensemble(
+            _db.OwnTransformRow(
+                file_id, own_transform_nm_v(curve.inv_ols_nm_v, slope),
+                p.params_invols, code_ver),
+            db_path, conn)
 
     _IOL_KEYS = ("invols_slope", "invols_intercept",
                  "invols_rms", "invols_fit_lo_idx", "invols_fit_hi_idx")
@@ -456,13 +465,13 @@ def analyse_curve(
             invols_fit_lo_idx_val = fit.fit_lo_idx
             invols_fit_hi_idx_val = fit.fit_hi_idx
         except Exception as exc:
-            if not _ensemble:
-                _put_own_transform(_nan)
+            if not (_ensemble or _ensemble_in_force()):
+                _put_own_transform(_nan, failed=True)
                 raise CurveAnalysisError("approach invOLS", exc) from exc
             invols_slope = _nan
         if np.isnan(invols_slope):
-            if not _ensemble:
-                _put_own_transform(_nan)
+            if not (_ensemble or _ensemble_in_force()):
+                _put_own_transform(_nan, failed=True)
                 raise CurveAnalysisError(
                     "approach invOLS",
                     ValueError("fit window is degenerate; no calibration slope was produced"),
@@ -475,8 +484,8 @@ def analyse_curve(
                 "invols_fit_lo_idx": float(invols_fit_lo_idx_val),
                 "invols_fit_hi_idx": float(invols_fit_hi_idx_val),
             }, p.params_invols)
-    _put_own_transform(invols_slope)
     if not np.isnan(invols_slope):
+        _put_own_transform(invols_slope)
         invols_slope_val = invols_slope
 
     # ── Contact detection ────────────────────────────────────────────────────

@@ -12,12 +12,11 @@ from typing import Mapping, Sequence
 from . import db, quantities, variables
 from .curve_analysis import pipeline_params_from
 from .invols_stats import (
-    AVERAGES, Summary, applied_value, own_transform_nm_v, summarise,
-    usable_instrument,
+    AVERAGES, TRANSFORM_KEY, Summary, applied_value, own_transform_nm_v,
+    summarise, usable_instrument,
 )
 from .provenance import cache_version
 
-TRANSFORM_KEY = "transform_invols_nm_v"
 _AVERAGE_SETTING = "invols_average"
 _METHODS = ("all", "box")
 _FIT_SETTING_KEYS = ("invols_offset_pts", "invols_window_pts", "spectral_cutoff_hz")

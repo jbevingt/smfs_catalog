@@ -316,8 +316,9 @@ def compute_curve_events_coords(
     _pj = None
     _divisor = None
     _cached_events = None
-    if can_read_cache:
+    if db_path is not None and file_id is not None:
         _divisor = _db.ensemble_divisors([file_id], db_path, conn).get(file_id)
+    if can_read_cache:
         _pj = event_map_params_json(ep, _divisor)
     if can_read_cache and not force:
         _doc = _db.get_event_map(file_id, _pj, code_ver, db_path, conn=conn)

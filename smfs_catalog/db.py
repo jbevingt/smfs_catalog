@@ -12,6 +12,7 @@ import os
 import zlib
 import sys
 import platform
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from datetime import datetime
@@ -26,8 +27,8 @@ from .analysis_params import (
     AnalysisParams,
 )
 from .invols_stats import (
-    cache_key, ensemble_divisor, own_transform_nm_v, resolve_divisor,
-    usable_instrument,
+    TRANSFORM_KEY, cache_key, ensemble_divisor, own_transform_nm_v,
+    resolve_divisor, usable_instrument,
 )
 from .path_pattern import path_matches
 
@@ -3046,6 +3047,51 @@ def ensemble_divisors(
         for r in rows
         if usable_instrument(r["inv_ols_nm_v"])
     }
+
+
+@dataclass(frozen=True)
+class OwnTransformRow:
+    file_id:      int
+    value:        Optional[float]
+    params_json:  str
+    code_version: str
+
+
+def write_own_transform_unless_ensemble(
+    row: OwnTransformRow,
+    db_path: str = DEFAULT_DB_PATH,
+    conn: Optional[sqlite3.Connection] = None,
+) -> bool:
+    """Upsert a file's own Transform InvOLS row unless an ensemble is in force
+    for it, the check and the write in one write transaction so an apply
+    landing in between cannot be overwritten.  True when the row was written.
+    A transaction the caller already has open is neither opened nor committed
+    here: it already holds the write lock, and its owner commits it."""
+    c = conn or get_connection(db_path)
+    owns_transaction = not c.in_transaction
+    try:
+        if owns_transaction:
+            c.execute("BEGIN IMMEDIATE")
+        if ensemble_divisors([row.file_id], conn=c).get(row.file_id) is not None:
+            wrote = False
+        else:
+            c.execute(
+                "INSERT OR REPLACE INTO analysis_results (file_id, analysis_type, "
+                "value, params_json, code_version, computed_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (row.file_id, TRANSFORM_KEY, row.value, row.params_json,
+                 row.code_version, _now()))
+            wrote = True
+        if owns_transaction:
+            c.commit()
+        return wrote
+    except Exception:
+        if owns_transaction:
+            c.rollback()
+        raise
+    finally:
+        if conn is None:
+            c.close()
 
 
 def divisor_for_file(

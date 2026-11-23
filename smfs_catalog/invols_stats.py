@@ -10,6 +10,8 @@ import numpy as np
 
 DIVISOR_SIGN: float = -1.0
 
+TRANSFORM_KEY = "transform_invols_nm_v"
+
 AVERAGES: tuple[str, ...] = ("arithmetic", "harmonic")
 
 
