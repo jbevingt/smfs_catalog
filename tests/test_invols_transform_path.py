@@ -34,6 +34,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -44,6 +45,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import invols_synth as synth                                  # noqa: E402
+from smfs_catalog.analysis_params import AnalysisParams       # noqa: E402
 from smfs_catalog import (curve_analysis, db, invols_store, roi_events,  # noqa: E402
                           roi_pipeline, signal_processing)
 
@@ -523,10 +525,10 @@ def test_an_apply_during_a_successful_fit_is_not_overwritten(
 def test_an_apply_during_a_failing_fit_is_not_overwritten_by_null(
         tmp_path, monkeypatch):
     c, fired = _apply_in_the_middle(tmp_path, monkeypatch, WINDOW_TOO_LONG)
-    try:
-        _analyse(synth.make_force_curve(), c)
-    except curve_analysis.CurveAnalysisError:
-        pass
+    result, _ = _analyse(synth.make_force_curve(), c)
+    assert math.isnan(result.invols_slope)       # the pass carried on ...
+    assert result.event is True                  # ... to its verdict
+    assert _slope_rows(c) == []
     _assert_group_row(c, fired)
 
 
@@ -545,3 +547,167 @@ def test_through_analyse_file_the_group_row_and_an_ensemble_keyed_event_survive(
     rows = synth.fetch(c.db, "SELECT value, params_json FROM analysis_results "
                        "WHERE file_id = ? AND analysis_type = 'event'", (c.fid,))
     assert rows == [(1.0, f"{all_params}|invols:{json.dumps(divisor)}")]
+
+
+# ── a cached, unchanged fit takes no write lock ──────────────────────────────
+
+SENTINEL = "SENTINEL-computed-at"
+
+
+def _stamp_computed_at(db_path, file_id):
+    con = sqlite3.connect(db_path)
+    with con:
+        con.execute("UPDATE analysis_results SET computed_at = ? WHERE file_id = "
+                    "? AND analysis_type = ?", (SENTINEL, file_id, TRANSFORM))
+    con.close()
+
+
+def _curve_without_a_rupture():
+    """The synthetic curve with the tether pull flattened: a non-event, so a
+    pass over it with every stage cached has nothing to write."""
+    curve = synth.make_force_curve()
+    curve.defl_retr = np.where(curve.piezo_retr >= 300.0, 0.0, curve.defl_retr)
+    return curve
+
+
+def test_a_rerun_with_a_cached_unchanged_fit_leaves_the_row_untouched(tmp_path):
+    c = _setup(tmp_path)
+    curve = synth.make_force_curve()
+    _analyse(curve, c)
+    _stamp_computed_at(c.db, c.fid)
+    before = _transform_rows(c)
+    assert before[0][3] == SENTINEL
+    _analyse(curve, c)
+    assert _transform_rows(c) == before
+
+
+def test_a_cached_unchanged_fit_does_not_wait_for_a_writer(tmp_path, monkeypatch):
+    c = _setup(tmp_path)
+    curve = _curve_without_a_rupture()
+    result, _ = _analyse(curve, c)
+    assert result.event is False
+    p = curve_analysis.pipeline_params_from(db.load_analysis_params(c.db))
+    real = db.get_connection
+    monkeypatch.setattr(db, "get_connection", lambda path=c.db, timeout=0.05:
+                        real(path, timeout=0.05))
+    writer = sqlite3.connect(c.db)
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        result, _ = curve_analysis.analyse_curve(    # "database is locked" if
+            curve, p, db_path=c.db, code_ver=CODE,   # it asks for the lock
+            file_id=c.fid)
+        assert result.invols_slope == pytest.approx(OWN_SLOPE, rel=1e-9)
+    finally:
+        writer.rollback()
+        writer.close()
+
+
+def test_the_write_helper_refuses_a_connection_with_a_transaction_open(tmp_path):
+    c = _setup(tmp_path)
+    synth.put_result(c.db, c.fid, TRANSFORM, 123.0, "{}")
+    before = _transform_rows(c)
+    row = db.OwnTransformRow(c.fid, 209.0, "{}", CODE)
+    conn = db.get_connection(c.db)
+    try:
+        conn.execute("BEGIN")
+        conn.execute("SELECT 1")
+        with pytest.raises(sqlite3.OperationalError):
+            db.write_own_transform_unless_ensemble(row, c.db, conn)
+        conn.rollback()
+    finally:
+        conn.close()
+    assert _transform_rows(c) == before
+
+
+# ── the helper's check and write are one transaction ─────────────────────────
+
+def test_an_apply_committing_while_the_helper_waits_is_not_overwritten(tmp_path):
+    c = _setup(tmp_path)
+    synth.put_result(c.db, c.fid, TRANSFORM, 123.0, "own-key")
+    writer = sqlite3.connect(c.db)
+    writer.execute("BEGIN IMMEDIATE")
+    writer.execute(
+        "INSERT INTO invols_groups (created_at, method, n, average, "
+        "transform_nm_v, fit_settings_json) VALUES ('x', 'all', 1, "
+        "'arithmetic', ?, '{}')", (GROUP_T,))
+    group_id = writer.execute("SELECT MAX(id) FROM invols_groups").fetchone()[0]
+    writer.execute("INSERT INTO invols_assignments (file_id, group_id) "
+                   "VALUES (?, ?)", (c.fid, group_id))
+    writer.execute(
+        "INSERT OR REPLACE INTO analysis_results (file_id, analysis_type, value, "
+        "params_json, code_version, computed_at) VALUES (?, ?, ?, ?, 'APPLIED', 'x')",
+        (c.fid, TRANSFORM, GROUP_T, json.dumps({"invols_group": group_id})))
+    outcome, started = [], threading.Event()
+
+    def run_helper():
+        started.set()
+        try:
+            outcome.append(db.write_own_transform_unless_ensemble(
+                db.OwnTransformRow(c.fid, 209.0, "own-key-2", CODE), c.db))
+        except BaseException as exc:             # reported by the main thread
+            outcome.append(exc)
+
+    thread = threading.Thread(target=run_helper, daemon=True)
+    thread.start()
+    try:
+        assert started.wait(10)
+        thread.join(0.3)
+        assert thread.is_alive()                 # it is waiting for the lock
+    finally:
+        writer.commit()
+        writer.close()
+    thread.join(20)
+    assert not thread.is_alive()
+    assert outcome == [False]
+    assert _transform_rows(c)[0][:3] == (
+        GROUP_T, json.dumps({"invols_group": group_id}), "APPLIED")
+
+
+# ── no code version, and no catalog, write nothing ───────────────────────────
+
+def test_without_a_catalog_a_pass_writes_nothing_and_opens_none(
+        tmp_path, monkeypatch):
+    def refuse(*args, **kwargs):
+        raise AssertionError("a catalog was opened")
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(db, "get_connection", refuse)
+    monkeypatch.setattr(sqlite3, "connect", refuse)
+    p = curve_analysis.pipeline_params_from(AnalysisParams())
+    result, _ = curve_analysis.analyse_curve(
+        synth.make_force_curve(), p, code_ver=CODE, file_id=1)
+    assert result.invols_slope == pytest.approx(OWN_SLOPE, rel=1e-9)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_without_a_code_version_a_successful_pass_writes_nothing(tmp_path):
+    c = _setup(tmp_path)
+    curve = synth.make_force_curve()
+    _analyse(curve, c, code_ver=None)
+    assert synth.fetch(c.db, "SELECT COUNT(*) FROM analysis_results") == [(0,)]
+    _events(curve, c, code_ver=None)
+    assert synth.fetch(c.db, "SELECT COUNT(*) FROM analysis_results") == [(0,)]
+
+
+# ── the fast path after a failed pass and a restored window ──────────────────
+
+def test_after_a_failed_pass_and_a_restored_window_the_fast_path_keeps_the_row(
+        tmp_path, monkeypatch):
+    c = _setup(tmp_path)
+    curve = synth.make_force_curve()
+    monkeypatch.setattr(curve_analysis, "load_force_curve", lambda path: curve)
+    path = synth.path_of(1)
+    assert curve_analysis.analyse_file(c.fid, path, c.db) == ("event", False)
+    good = _transform_rows(c)
+    _set_window(c.db, WINDOW_TOO_LONG)
+    with pytest.raises(curve_analysis.CurveAnalysisError):
+        curve_analysis.analyse_file(c.fid, path, c.db)
+    assert _transform_rows(c) == good
+    _set_window(c.db, 200)
+    real, calls = curve_analysis.analyse_curve, []
+    monkeypatch.setattr(curve_analysis, "analyse_curve",
+                        lambda *a, **k: calls.append(1) or real(*a, **k))
+    assert curve_analysis.analyse_file(c.fid, path, c.db) == ("event", True)
+    assert calls == []
+    assert _transform_rows(c) == good
+    assert good[0][0] == pytest.approx(209.62105, rel=1e-6)
