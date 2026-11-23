@@ -96,6 +96,18 @@ def _fill_version_1(path):
             con.execute("INSERT INTO event_map VALUES (?, 'P', 'zzz', '{}', 't3')",
                         (number,))
         con.execute("INSERT INTO meta VALUES ('built_host', 'somewhere')")
+        # A real version-1 catalog has already been through the one-time
+        # criteria migrations (they run on every open and leave these marks);
+        # without them they would run again on this fixture and park the bound.
+        con.execute("INSERT INTO meta VALUES "
+                    "('criteria_bounds_reconciled_v1', '2026-01-01T00:00:00')")
+        con.execute("INSERT INTO meta VALUES "
+                    "('criteria_integer_bounds_whole_v1', '2026-01-01T00:00:00')")
+        con.execute("INSERT INTO thresholds (experimentalist, analysis_type, "
+                    "lower_bound, upper_bound, label, created_at) VALUES "
+                    "('someone', 'invols_rms', 0.25, 3.75, 'my bound', 't0')")
+        con.execute("INSERT INTO experimentalist_profiles VALUES "
+                    "('someone', '{\"x\": 1.5, \"y\": \"kept\"}', 't0')")
         con.execute("INSERT INTO settings VALUES ('s', 1.5, 't')")
         con.execute("INSERT INTO app_settings VALUES ('a', 'b', 't')")
         con.execute("INSERT INTO distribution_fits (variable, n_values, n_peaks, "
@@ -170,7 +182,7 @@ def test_every_pre_existing_row_is_unchanged(upgraded):
         if table in V1_OPEN_TABLES:
             continue
         assert after[table] == rows, table
-    for table in ("meta", "analysis_results"):
+    for table in V1_OPEN_TABLES:
         assert all(row in after[table] for row in before[table]), table
 
 
