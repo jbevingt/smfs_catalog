@@ -110,6 +110,7 @@ _ANALYSIS_LABELS: dict[str, str] = {
     "baseline_rms":     "Baseline RMS",
     "invols_slope":     "InvOLS",
     "invols_rms":       "InvOLS RMS",
+    "transform_invols_nm_v": "Transform InvOLS",
 }
 
 # THE name for each key, wherever it is shown, without its unit (see label()).
@@ -158,6 +159,7 @@ DISPLAY_ORDER: tuple[str, ...] = (
     "baseline_rms",
     "invols_slope",
     "invols_rms",
+    "transform_invols_nm_v",
     "onset_dx_nm",
     "rupture_dx_nm",
     "seg_n_segments",
@@ -280,6 +282,7 @@ DESCRIPTIONS: dict[str, str] = {
     "baseline_rms": "Residual RMS of the far-retract baseline fit. Larger values indicate a noisier or drifting baseline.",
     "invols_slope": "Per-curve inverse optical-lever sensitivity fitted in the deep-contact approach region; ideally close to one.",
     "invols_rms": "Residual RMS of the per-curve InvOLS fit. Larger values indicate a noisier or more nonlinear contact region.",
+    "transform_invols_nm_v": "The InvOLS in nm/V this trace's deflection is converted with: its own per-curve fit, or the mean applied from the InvOLS window. The InvOLS source column says which.",
     "seg_force_pN": "Rupture force terminating the currently selected Ultimate or Penultimate segment, or a manually picked Primary segment on curves that have one.",
     "seg_x_rupture_nm": "Extension at that same rupture, from snap-off, on the deflection-corrected axis the WLC fits use. The junction's end-to-end length when it broke, so it is the one comparable with Seg l_c.",
     "seg_x_junction_nm": "How far the junction had stretched when that rupture happened: the same extension measured from the junction's onset, not snap-off. A stretch, not a length — not comparable with Seg l_c.",

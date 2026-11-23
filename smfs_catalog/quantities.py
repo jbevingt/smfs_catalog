@@ -225,6 +225,7 @@ QUANTITIES: dict[str, Quantity] = {
     "invols_slope":     Quantity(NM_PER_NM, 4),  # -1.68 .. -0.51
     "invols_rms":       Quantity(NM, 4),   # 0.011 .. 0.29
     "invols_r2":        Quantity(RATIO, 4),
+    "transform_invols_nm_v": Quantity(NM_PER_V, 2),
     "baseline_intercept": Quantity(NM, 4),
     "invols_intercept":   Quantity(NM, 4),
     "snapoff_idx":      INTEGER,
