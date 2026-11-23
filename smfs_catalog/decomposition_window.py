@@ -36,6 +36,8 @@ from .widgets import FlowLayout, LabeledControl, SampleMarksToggle
 from .navigator_bar import WorkerNavBar
 from .provenance import cache_version
 from . import sample_marks
+from . import invols_store as _invols_store
+from .invols_fit_controls import InvolsFitControls
 from . import variables as _vars
 from . import style
 from .qt_utils import (
@@ -327,34 +329,11 @@ class DecompositionWindow(QWidget):
         ctrl_layout.addWidget(LabeledControl(
             "Baseline width:", self._anchor_spinbox, self._baseline_label))
 
-        self._invols_offset_spinbox = QSpinBox()
-        self._invols_offset_spinbox.setRange(0, _quant.SPIN_INT_MAX)
-        _quant.configure_spinbox(self._invols_offset_spinbox, "invols_offset_pts")
-        self._invols_offset_spinbox.setValue(self._invols_offset_pts)
-        self._invols_offset_spinbox.setToolTip(
-            "Samples skipped back from the turnaround before the invOLS fit "
-            "window begins. The deepest-contact samples carry piezo ringing and "
-            "any sample deformation at peak load, both of which bend the line "
-            "that converts deflection into force.\n\n"
-            "If the offset and window together reach past the start of the "
-            "approach, no slope can be fitted and the curve is not analysed: "
-            "its readouts show \"—\".")
-        self._invols_offset_spinbox.valueChanged.connect(self._on_invols_offset_spinbox)
-        ctrl_layout.addWidget(LabeledControl(
-            "invOLS off:", self._invols_offset_spinbox))
-
-        self._invols_window_spinbox = QSpinBox()
-        self._invols_window_spinbox.setRange(2, _quant.SPIN_INT_MAX)
-        _quant.configure_spinbox(self._invols_window_spinbox, "invols_window_pts")
-        self._invols_window_spinbox.setValue(self._invols_window_pts)
-        self._invols_window_spinbox.setToolTip(
-            "Number of samples in the invOLS straight-line fit, counted back "
-            "from the offset above toward shallower contact.\n\n"
-            "This slope is what turns raw deflection into force, so it scales "
-            "every force in the app. The fitted slope and RMS residual are shown "
-            "beside it. If the window reaches past the start of the approach, "
-            "no slope can be fitted and the curve is not analysed.")
-        self._invols_window_spinbox.valueChanged.connect(self._on_invols_window_spinbox)
+        self._invols_controls = InvolsFitControls(db_path)
+        self._invols_offset_spinbox = self._invols_controls.offset_spinbox
+        self._invols_window_spinbox = self._invols_controls.window_spinbox
+        self._invols_controls.changed.connect(self._on_invols_fit_changed)
+        ctrl_layout.addWidget(self._invols_controls)
 
         self._invols_label = QLabel("")
         _iol_font = self._invols_label.font()
@@ -362,9 +341,7 @@ class DecompositionWindow(QWidget):
         self._invols_label.setFont(_iol_font)
         self._invols_label.setStyleSheet(f"color: {_COLOR_MUTED};")
         self._invols_label.setMinimumWidth(170)
-        ctrl_layout.addWidget(LabeledControl(
-            "invOLS win:", self._invols_window_spinbox,
-            self._invols_label))
+        ctrl_layout.addWidget(self._invols_label)
 
         ctrl_layout.addWidget(SampleMarksToggle())
 
@@ -790,17 +767,9 @@ class DecompositionWindow(QWidget):
             self.update_curve(self._current_curve)
         self.analysis_params_changed.emit()
 
-    def _on_invols_offset_spinbox(self, value: int) -> None:
-        self._invols_offset_pts = int(value)
-        _db.update_analysis_param('invols_offset_pts', float(value), self._db_path)
-        self._save_user_profile()
-        if self._current_curve is not None:
-            self.update_curve(self._current_curve)
-        self.analysis_params_changed.emit()
-
-    def _on_invols_window_spinbox(self, value: int) -> None:
-        self._invols_window_pts = int(value)
-        _db.update_analysis_param('invols_window_pts', float(value), self._db_path)
+    def _on_invols_fit_changed(self) -> None:
+        self._invols_offset_pts = self._invols_controls.offset_pts()
+        self._invols_window_pts = self._invols_controls.window_pts()
         self._save_user_profile()
         if self._current_curve is not None:
             self.update_curve(self._current_curve)
@@ -921,12 +890,12 @@ class DecompositionWindow(QWidget):
             (self._trim_spinbox,          self._trim_pts),
             (self._var_win_spinbox,       self._var_window_ms),
             (self._anchor_spinbox,        int(round(self._anchor_nm))),
-            (self._invols_offset_spinbox, self._invols_offset_pts),
-            (self._invols_window_spinbox, self._invols_window_pts),
         ):
             w.blockSignals(True)
             w.setValue(val)
             w.blockSignals(False)
+        self._invols_controls.set_values(
+            self._invols_offset_pts, self._invols_window_pts)
 
         # The two thresholds are seeded separately: they need their box
         # widened to whatever the reloaded profile actually holds before the
@@ -1089,17 +1058,13 @@ class DecompositionWindow(QWidget):
             y_lo = result.invols_slope * x_lo_piezo + stage1.invols_intercept
             y_hi = result.invols_slope * x_hi_piezo + stage1.invols_intercept
             self._invols_fit_line.setData([lo, hi - 1], [y_lo, y_hi])
-            self._invols_label.setText(
-                f"invOLS slope={_q('invols_slope', result.invols_slope)}  "
-                f"RMS={_q('invols_rms', stage1.invols_rms, with_unit=True)}"
-            )
-        elif result is not None and not np.isnan(result.invols_slope):
-            self._invols_fit_line.setData([], [])
-            self._invols_label.setText(
-                f"invOLS slope={_q('invols_slope', result.invols_slope)}  RMS=(cached)")
         else:
             self._invols_fit_line.setData([], [])
-            self._invols_label.setText("invOLS: —")
+        own_slope = None
+        if result is not None and not np.isnan(result.invols_slope):
+            own_slope = float(result.invols_slope)
+        self._invols_label.setText(_invols_store.curve_label(
+            curve.path, own_slope, curve.inv_ols_nm_v, self._db_path))
 
         # ── Baseline fit — retract, anchor region ──────────────────────────────
         # Same pattern as invOLS just above: offset/flatness come from `result`
