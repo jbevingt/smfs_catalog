@@ -192,7 +192,7 @@ def test_three_rows_with_own_values_give_three_points(plot):
     assert len(_points(plot)) == 3
     assert not _markers(plot)
     xs = sorted(pt.pos().x() for _, pt in _points(plot))
-    assert xs == pytest.approx([T0, T0 + HOUR, T0 + 2 * HOUR])
+    assert xs == pytest.approx([T0, T0 + HOUR, T0 + 2 * HOUR], abs=1.0)
     ys = sorted(pt.pos().y() for _, pt in _points(plot))
     assert ys == pytest.approx([189.65714, 199.14, 209.62105])
 
@@ -619,8 +619,10 @@ def test_left_drag_on_an_axis_pans_and_draws_no_box(plot, axis, step, has_box):
     assert plot.box() == before_box
     assert spy.calls == []
     after = plot.getViewBox().viewRange()
-    assert after[axis] != pytest.approx(before_view[axis])      # it panned
-    assert after[1 - axis] == pytest.approx(before_view[1 - axis])
+    tol = (1.0, 1e-6)                    # seconds on x, nm/V on y
+    assert after[axis] != pytest.approx(before_view[axis], abs=tol[axis])  # panned
+    assert after[1 - axis] == pytest.approx(before_view[1 - axis],
+                                            abs=tol[1 - axis])
 
 
 # ── I2: a slow click with a tiny movement keeps the box ──────────────────────
