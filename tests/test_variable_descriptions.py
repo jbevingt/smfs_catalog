@@ -229,7 +229,6 @@ def test_segment_selector_explains_single_segment_fallback():
 _DECOMP_CONTROLS = [
     "_cutoff_slider", "_trim_spinbox", "_var_win_spinbox",
     "_thresh_appr_spinbox", "_thresh_retr_spinbox", "_anchor_spinbox",
-    "_invols_offset_spinbox", "_invols_window_spinbox",
 ]
 
 

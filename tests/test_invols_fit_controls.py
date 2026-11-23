@@ -366,3 +366,31 @@ def test_no_fit_line_when_there_is_no_own_fit(catalog, open_windows):
     win = _window(db_path, open_windows)
     win.update_curve(_curve())
     assert _fit_line_points(win) == 0
+
+
+# ── hover text: the wording that moved from decomposition_window.py ──────────
+# Literals copied from `main`'s decomposition_window.py, so a silent wording
+# change during the move fails.  Read from the spin boxes themselves (the old
+# bug was tooltips set on status labels instead of on the control).
+
+_OFFSET_TIP = (
+    "Samples skipped back from the turnaround before the invOLS fit "
+    "window begins. The deepest-contact samples carry piezo ringing and "
+    "any sample deformation at peak load, both of which bend the line "
+    "that converts deflection into force.\n\n"
+    "If the offset and window together reach past the start of the "
+    "approach, no slope can be fitted and the curve is not analysed: "
+    "its readouts show \"—\".")
+_WINDOW_TIP = (
+    "Number of samples in the invOLS straight-line fit, counted back "
+    "from the offset above toward shallower contact.\n\n"
+    "This slope is what turns raw deflection into force, so it scales "
+    "every force in the app. The fitted slope and RMS residual are shown "
+    "beside it. If the window reaches past the start of the approach, "
+    "no slope can be fitted and the curve is not analysed.")
+
+
+def test_spin_boxes_carry_the_original_hover_text(catalog, open_windows):
+    controls = _controls(catalog[0], open_windows)
+    assert controls.offset_spinbox.toolTip() == _OFFSET_TIP
+    assert controls.window_spinbox.toolTip() == _WINDOW_TIP
