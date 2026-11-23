@@ -99,6 +99,56 @@ def add_group(db_path, file_ids, transform_nm_v, average="arithmetic"):
     return group_id
 
 
+def current_fit_key(db_path):
+    """The invOLS fit key for the fit settings now in force in `db_path`: the
+    text a stored slope row carries when its fit was made under them."""
+    from smfs_catalog import curve_analysis
+    params = curve_analysis.pipeline_params_from(db.load_analysis_params(db_path))
+    return params.params_invols
+
+
+def stamp_fit_key(db_path, file_ids):
+    """Rewrite the stored slope rows of `file_ids` under the fit key in force
+    now, as if the queue had just re-run those files."""
+    key = current_fit_key(db_path)
+    con = sqlite3.connect(db_path)
+    try:
+        with con:
+            for file_id in file_ids:
+                con.execute("UPDATE analysis_results SET params_json = ? "
+                            "WHERE file_id = ? AND analysis_type = "
+                            "'invols_slope'", (key, file_id))
+    finally:
+        con.close()
+
+
+def add_result(db_path, file_id, analysis_type, value, params_json="{}"):
+    """Write one analysis_results row with plain SQL."""
+    con = sqlite3.connect(db_path)
+    try:
+        with con:
+            _add_result(con, file_id, analysis_type, value, params_json)
+    finally:
+        con.close()
+
+
+def add_other_rows(db_path, file_id):
+    """Give `file_id` an event_map row and an event_histograms row (plain SQL),
+    the stored results an applied ensemble must leave alone."""
+    con = sqlite3.connect(db_path)
+    try:
+        with con:
+            con.execute("INSERT INTO event_map (file_id, params_json, "
+                        "code_version, payload_json, computed_at) "
+                        "VALUES (?, 'P', 'C', '[1, 2]', 'x')", (file_id,))
+            con.execute("INSERT INTO event_histograms (file_id, histogram, "
+                        "x_bins, f_bins, params_json, computed_at) "
+                        "VALUES (?, ?, 4, 4, 'P', 'x')",
+                        (file_id, b"\x01\x02\x03"))
+    finally:
+        con.close()
+
+
 def fetch(db_path, sql, params=()):
     """Every row `sql` returns, as plain tuples, read on a connection of its own."""
     con = sqlite3.connect(db_path)
