@@ -7,7 +7,6 @@ import math
 import sqlite3
 from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Mapping, Sequence
 
 from . import db, quantities, variables
@@ -82,10 +81,10 @@ def _fetch_in(conn: sqlite3.Connection, sql: str, ids: Sequence[int]) -> list:
 
 
 def _results(conn: sqlite3.Connection, ids: Sequence[int]) -> dict[int, dict[str, tuple]]:
-    """{file_id: {'invols_slope'|'invols_rms': (value, params_json)}}."""
+    """{file_id: {'invols_slope'|'invols_rms'|TRANSFORM_KEY: (value, params_json)}}."""
     rows = _fetch_in(conn, """
         SELECT file_id, analysis_type, value, params_json FROM analysis_results
-        WHERE analysis_type IN ('invols_slope', 'invols_rms')
+        WHERE analysis_type IN ('invols_slope', 'invols_rms', 'transform_invols_nm_v')
           AND file_id IN ({ph})""", ids)
     out: dict[int, dict[str, tuple]] = {}
     for r in rows:
@@ -122,12 +121,13 @@ def _trace_row(f: sqlite3.Row, found: dict[str, tuple], group: _Group | None,
                time_s: float | None, key: str) -> TraceRow:
     own, stored_key = _own_fit(f["inv_ols_nm_v"], found)
     rms = found.get("invols_rms", (None,))[0]
+    in_use = found.get(TRANSFORM_KEY, (None,))[0]
     return TraceRow(
         f["id"], f["path"], time_s, f["inv_ols_nm_v"], own,
         own is not None and stored_key == key, rms,
         "own" if group is None else "ensemble",
         None if group is None else group.group_id,
-        own if group is None else group.value)
+        in_use if usable_instrument(f["inv_ols_nm_v"]) else None)
 
 
 def trace_rows(paths: Sequence[str], db_path: str) -> list[TraceRow]:
@@ -136,7 +136,7 @@ def trace_rows(paths: Sequence[str], db_path: str) -> list[TraceRow]:
     conn = db.get_connection(db_path)
     try:
         files = _fetch_in(conn, "SELECT id, path, inv_ols_nm_v FROM files "
-                          "WHERE path IN ({ph})", [db.normalize_path(p) for p in paths])
+                          "WHERE path IN ({ph})", list(dict.fromkeys(db.normalize_path(p) for p in paths)))
         ids = [f["id"] for f in files]
         found, groups = _results(conn, ids), _ensemble_groups(conn, ids)
     finally:
@@ -150,9 +150,12 @@ def trace_rows(paths: Sequence[str], db_path: str) -> list[TraceRow]:
     return rows
 
 
-def fit_settings_now(db_path: str) -> dict[str, float]:
-    params = db.load_analysis_params(db_path)
+def _settings_of(params) -> dict[str, float]:
     return {k: float(getattr(params, k)) for k in _FIT_SETTING_KEYS}
+
+
+def fit_settings_now(db_path: str) -> dict[str, float]:
+    return _settings_of(db.load_analysis_params(db_path))
 
 
 def stale_setting_groups(paths: Sequence[str], db_path: str) -> list[int]:
@@ -285,54 +288,67 @@ def _insert_group(conn: sqlite3.Connection, request: EnsembleRequest,
         INSERT INTO invols_groups (created_at, method, n, average, transform_nm_v,
                                    sd_nm_v, se_nm_v, box_json, fit_settings_json)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (datetime.now().isoformat(timespec="seconds"), request.method, summary.n,
+        (db._now(), request.method, summary.n,
          request.average, value, summary.sd, summary.se, box, json.dumps(dict(settings))))
     return cur.lastrowid
 
 
-def _assign_targets(conn: sqlite3.Connection, group_id: int,
-                    targets: Sequence[int], value: float) -> tuple[int, tuple[int, ...]]:
+def _code_version() -> str:
     version = cache_version()
     if version is None:
         raise InvolsApplyError("no code identity: results cannot be stored")
-    instruments = _instruments(conn, targets)
-    skipped = tuple(t for t in targets if not usable_instrument(instruments.get(t)))
-    written = [t for t in targets if t in instruments and t not in skipped]
-    for fid in written:
+    return version
+
+
+def _assign_targets(conn: sqlite3.Connection, group_id: int,
+                    targets: Sequence[int], value: float, version: str) -> None:
+    params_json = json.dumps({"invols_group": group_id})
+    for fid in targets:
         conn.execute("INSERT OR REPLACE INTO invols_assignments (file_id, group_id) "
                      "VALUES (?, ?)", (fid, group_id))
         db.write_analysis_results_multi(
-            fid, {TRANSFORM_KEY: value}, json.dumps({"invols_group": group_id}),
-            version, conn=conn, commit=False)
-    return len(written), skipped
+            fid, {TRANSFORM_KEY: value}, params_json, version,
+            conn=conn, commit=False)
+
+
+def _apply_in_transaction(conn: sqlite3.Connection, request: EnsembleRequest,
+                          version: str, db_path: str) -> ApplyResult:
+    # One snapshot of the settings: it gives both the key members are checked
+    # against and the settings stored on the group.
+    params = db.load_analysis_params(db_path, conn=conn)
+    key = pipeline_params_from(params).params_invols
+    members = tuple(dict.fromkeys(request.member_ids))
+    targets = tuple(dict.fromkeys(request.target_ids))
+    used, left_out = _eligible_members(conn, members, key)
+    summary = summarise(v for _, v in used)
+    value = applied_value(summary, request.average) if used else None
+    if value is None:
+        raise InvolsApplyError("no trace with a current own fit can give a value")
+    instruments = _instruments(conn, targets)
+    skipped = tuple(t for t in targets if not usable_instrument(instruments.get(t)))
+    writable = [t for t in targets if t not in skipped]
+    if not writable:
+        return ApplyResult(None, summary, 0, skipped, left_out)
+    group_id = _insert_group(conn, request, summary, value, _settings_of(params))
+    conn.executemany("INSERT INTO invols_group_members (group_id, file_id) "
+                     "VALUES (?, ?)", [(group_id, fid) for fid, _ in used])
+    _assign_targets(conn, group_id, writable, value, version)
+    return ApplyResult(group_id, summary, len(writable), skipped, left_out)
 
 
 def apply_ensemble(request: EnsembleRequest, db_path: str) -> ApplyResult:
     _validate(request)
-    settings = fit_settings_now(db_path)
-    key = _fit_key(db_path)
-    members = tuple(dict.fromkeys(request.member_ids))
-    targets = tuple(dict.fromkeys(request.target_ids))
+    version = _code_version()
     with _write_transaction(db_path) as conn:
-        used, left_out = _eligible_members(conn, members, key)
-        summary = summarise(v for _, v in used)
-        value = applied_value(summary, request.average) if used else None
-        if value is None:
-            raise InvolsApplyError("no trace with a current own fit can give a value")
-        group_id = _insert_group(conn, request, summary, value, settings)
-        conn.executemany("INSERT INTO invols_group_members (group_id, file_id) "
-                         "VALUES (?, ?)", [(group_id, fid) for fid, _ in used])
-        n_written, skipped = _assign_targets(conn, group_id, targets, value)
-    return ApplyResult(group_id, summary, n_written, skipped, left_out)
+        return _apply_in_transaction(conn, request, version, db_path)
 
 
 def apply_own(target_ids: Sequence[int], db_path: str) -> int:
-    key = _fit_key(db_path)
-    version = cache_version()
-    if version is None:
-        raise InvolsApplyError("no code identity: results cannot be stored")
+    version = _code_version()
     targets = list(dict.fromkeys(target_ids))
     with _write_transaction(db_path) as conn:
+        key = pipeline_params_from(
+            db.load_analysis_params(db_path, conn=conn)).params_invols
         instruments = _instruments(conn, targets)
         found = _results(conn, targets)
         present = [t for t in targets if t in instruments]

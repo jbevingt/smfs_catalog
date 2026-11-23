@@ -1883,91 +1883,111 @@ def profile_defaults() -> dict[str, float | str]:
 def _materialized_param_set(
     db_path: str,
     updates: Optional[dict[str, float]] = None,
+    conn: Optional[sqlite3.Connection] = None,
 ) -> AnalysisParams:
-    """Resolve and durably store the active owner's complete analysis set."""
-    import json
+    """Resolve and durably store the active owner's complete analysis set.
 
-    conn = get_connection(db_path)
+    With `conn`, the caller's open transaction is used: nothing is committed,
+    rolled back or closed here."""
+    if conn is not None:
+        return _resolve_param_set(conn, updates)
+    own = get_connection(db_path)
     try:
         # Completion and an optional edit are one write transaction. No other
         # parameter writer can be lost between our read and persistence.
-        conn.execute("BEGIN IMMEDIATE")
-        owner_row = conn.execute("""
-            SELECT f.experimentalist
-            FROM   analysis_queue q
-            JOIN   files f ON f.id = q.file_id
-            ORDER  BY q.enqueued_at, q.file_id
-            LIMIT  1
-        """).fetchone()
-        owner = (str(owner_row[0]) if owner_row and owner_row[0]
-                 else DEFAULT_EXPERIMENTALIST)
-
-        def _profile(name: str) -> dict:
-            row = conn.execute(
-                "SELECT params_json FROM experimentalist_profiles "
-                "WHERE experimentalist = ?", (name,),
-            ).fetchone()
-            if row is None:
-                return {}
-            try:
-                value = json.loads(row[0])
-                return value if isinstance(value, dict) else {}
-            except (TypeError, ValueError):
-                return {}
-
-        profile = _profile(owner)
-        shared = {} if owner == DEFAULT_EXPERIMENTALIST else _profile(DEFAULT_EXPERIMENTALIST)
-        resolved: dict[str, float] = {}
-        for key, dflt in PARAM_DEFAULTS.items():
-            for src in (profile, shared):
-                try:
-                    resolved[key] = float(src[key])
-                    break
-                except (KeyError, TypeError, ValueError):
-                    continue
-            else:
-                resolved[key] = float(dflt)
-        if not any("roi_inner_threshold_nm_per_nm" in src for src in (profile, shared)):
-            resolved["roi_inner_threshold_nm_per_nm"] = resolved["roi_threshold_nm_per_nm"]
-        for key, value in (updates or {}).items():
-            if key not in PARAM_KEYS:
-                raise KeyError(f"unknown analysis parameter: {key}")
-            resolved[key] = float(value)
-        params = AnalysisParams.from_mapping(resolved)
-
-        # Preserve the profile's view settings and any future non-analysis
-        # fields while filling/replacing only analysis keys.
-        stored = dict(profile)
-        changed = False
-        for key, value in params.items():
-            try:
-                same = float(stored[key]) == value
-            except (KeyError, TypeError, ValueError):
-                same = False
-            if not same:
-                stored[key] = value
-                changed = True
-        if changed or not profile:
-            conn.execute("""
-                INSERT INTO experimentalist_profiles
-                    (experimentalist, params_json, updated_at)
-                VALUES (?, json(?), ?)
-                ON CONFLICT(experimentalist) DO UPDATE SET
-                    params_json = excluded.params_json,
-                    updated_at  = excluded.updated_at
-            """, (owner, json.dumps(stored), _now()))
-        conn.commit()
+        own.execute("BEGIN IMMEDIATE")
+        params = _resolve_param_set(own, updates)
+        own.commit()
         return params
     except Exception:
-        conn.rollback()
+        own.rollback()
         raise
     finally:
-        conn.close()
+        own.close()
 
 
-def load_analysis_params(db_path: str = DEFAULT_DB_PATH) -> AnalysisParams:
-    """THE complete immutable analysis snapshot currently in force."""
-    return _materialized_param_set(db_path)
+def _resolve_param_set(
+    conn: sqlite3.Connection,
+    updates: Optional[dict[str, float]],
+) -> AnalysisParams:
+    """The part of _materialized_param_set that runs inside an open write
+    transaction on `conn`."""
+    import json
+
+    owner_row = conn.execute("""
+        SELECT f.experimentalist
+        FROM   analysis_queue q
+        JOIN   files f ON f.id = q.file_id
+        ORDER  BY q.enqueued_at, q.file_id
+        LIMIT  1
+    """).fetchone()
+    owner = (str(owner_row[0]) if owner_row and owner_row[0]
+             else DEFAULT_EXPERIMENTALIST)
+
+    def _profile(name: str) -> dict:
+        row = conn.execute(
+            "SELECT params_json FROM experimentalist_profiles "
+            "WHERE experimentalist = ?", (name,),
+        ).fetchone()
+        if row is None:
+            return {}
+        try:
+            value = json.loads(row[0])
+            return value if isinstance(value, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+
+    profile = _profile(owner)
+    shared = {} if owner == DEFAULT_EXPERIMENTALIST else _profile(DEFAULT_EXPERIMENTALIST)
+    resolved: dict[str, float] = {}
+    for key, dflt in PARAM_DEFAULTS.items():
+        for src in (profile, shared):
+            try:
+                resolved[key] = float(src[key])
+                break
+            except (KeyError, TypeError, ValueError):
+                continue
+        else:
+            resolved[key] = float(dflt)
+    if not any("roi_inner_threshold_nm_per_nm" in src for src in (profile, shared)):
+        resolved["roi_inner_threshold_nm_per_nm"] = resolved["roi_threshold_nm_per_nm"]
+    for key, value in (updates or {}).items():
+        if key not in PARAM_KEYS:
+            raise KeyError(f"unknown analysis parameter: {key}")
+        resolved[key] = float(value)
+    params = AnalysisParams.from_mapping(resolved)
+
+    # Preserve the profile's view settings and any future non-analysis
+    # fields while filling/replacing only analysis keys.
+    stored = dict(profile)
+    changed = False
+    for key, value in params.items():
+        try:
+            same = float(stored[key]) == value
+        except (KeyError, TypeError, ValueError):
+            same = False
+        if not same:
+            stored[key] = value
+            changed = True
+    if changed or not profile:
+        conn.execute("""
+            INSERT INTO experimentalist_profiles
+                (experimentalist, params_json, updated_at)
+            VALUES (?, json(?), ?)
+            ON CONFLICT(experimentalist) DO UPDATE SET
+                params_json = excluded.params_json,
+                updated_at  = excluded.updated_at
+        """, (owner, json.dumps(stored), _now()))
+    return params
+
+
+def load_analysis_params(
+    db_path: str = DEFAULT_DB_PATH,
+    conn: Optional[sqlite3.Connection] = None,
+) -> AnalysisParams:
+    """THE complete immutable analysis snapshot currently in force.  With
+    `conn`, read inside the caller's open write transaction."""
+    return _materialized_param_set(db_path, conn=conn)
 
 
 def update_analysis_param(
