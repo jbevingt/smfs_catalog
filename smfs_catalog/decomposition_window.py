@@ -905,7 +905,7 @@ class DecompositionWindow(QWidget):
             w.blockSignals(True)
             w.setValue(val)
             w.blockSignals(False)
-        self._invols_controls.set_values(
+        self._invols_controls.load_values(
             self._invols_offset_pts, self._invols_window_pts)
 
         # The two thresholds are seeded separately: they need their box

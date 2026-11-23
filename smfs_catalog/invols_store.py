@@ -210,7 +210,7 @@ def _finite(value: float | None) -> bool:
 
 def _rms_text(own_slope: float | None, own_rms: float | None,
               stored: Mapping) -> str | None:
-    if own_slope is None:
+    if not _finite(own_slope):
         return None
     rms = own_rms
     if rms is None and stored.get("invols_slope", (None,))[0] == own_slope:

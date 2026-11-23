@@ -94,6 +94,17 @@ class InvolsFitControls(QWidget):
             box.setValue(int(value))
             box.blockSignals(False)
 
+    def load_values(self, offset_pts: int, window_pts: int) -> None:
+        for box, value in ((self.offset_spinbox, offset_pts),
+                           (self.window_spinbox, window_pts)):
+            box.blockSignals(True)
+            # Setting an unchanged value leaves typed-but-unconfirmed text in
+            # place, so step off it first.
+            box.setValue(box.minimum() if int(value) != box.minimum()
+                         else box.minimum() + 1)
+            box.setValue(int(value))
+            box.blockSignals(False)
+
     def refresh_from_db(self) -> None:
         params = _db.load_analysis_params(self._db_path)
         self.set_values(params.invols_offset_pts, params.invols_window_pts)
