@@ -15,7 +15,7 @@ import platform
 from functools import lru_cache
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 from scipy import sparse
@@ -24,6 +24,9 @@ from .analysis_params import (
     ANALYSIS_PARAM_DEFAULTS,
     ANALYSIS_PARAM_KEYS,
     AnalysisParams,
+)
+from .invols_stats import (
+    cache_key, ensemble_divisor, own_transform_nm_v, resolve_divisor,
 )
 from .path_pattern import path_matches
 
@@ -104,7 +107,7 @@ def get_connection(db_path: str = DEFAULT_DB_PATH, timeout: float = 30.0) -> sql
 # Changing the layout raises this by one and adds the step in _UPGRADES that
 # carries a catalog from the number before; tests/test_catalog_version.py fails
 # when the layout changes and this does not.
-CATALOG_VERSION = 1
+CATALOG_VERSION = 2
 
 
 class CatalogTooNew(RuntimeError):
@@ -345,9 +348,63 @@ def _upgrade_to_1(conn: sqlite3.Connection) -> None:
     )
 
 
+_INVOLS_TABLES_SQL: tuple[str, ...] = (
+    """
+    CREATE TABLE IF NOT EXISTS invols_groups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at TEXT NOT NULL,
+        method TEXT NOT NULL,
+        n INTEGER NOT NULL,
+        average TEXT NOT NULL,
+        transform_nm_v REAL NOT NULL,
+        sd_nm_v REAL, se_nm_v REAL,
+        box_json TEXT,
+        fit_settings_json TEXT NOT NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS invols_group_members (
+        group_id INTEGER NOT NULL REFERENCES invols_groups(id),
+        file_id  INTEGER NOT NULL REFERENCES files(id),
+        PRIMARY KEY (group_id, file_id)
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS invols_assignments (
+        file_id  INTEGER PRIMARY KEY REFERENCES files(id),
+        group_id INTEGER NOT NULL REFERENCES invols_groups(id)
+    )
+    """,
+)
+
+
+def _upgrade_to_2(conn: sqlite3.Connection) -> None:
+    """Version 1 to 2: the invOLS ensemble tables, and each trace's own
+    Transform InvOLS derived from the slope and instrument value already stored.
+    """
+    for statement in _INVOLS_TABLES_SQL:
+        conn.execute(statement)
+    rows = conn.execute("""
+        SELECT r.file_id, r.value, r.params_json, r.code_version, f.inv_ols_nm_v
+        FROM   analysis_results r
+        JOIN   files f ON f.id = r.file_id
+        WHERE  r.analysis_type = 'invols_slope' AND f.inv_ols_nm_v IS NOT NULL
+    """).fetchall()
+    now = _now()
+    for r in rows:
+        value = own_transform_nm_v(r["inv_ols_nm_v"], r["value"])
+        if value is None:
+            continue
+        conn.execute("""
+            INSERT OR IGNORE INTO analysis_results
+                (file_id, analysis_type, value, params_json, code_version, computed_at)
+            VALUES (?, 'transform_invols_nm_v', ?, ?, ?, ?)
+        """, (r["file_id"], value, r["params_json"], r["code_version"], now))
+
+
 # Step n carries a catalog from version n - 1 to version n.  Each takes the
 # connection _run_step holds its transaction on, and commits nothing itself.
-_UPGRADES = {1: _upgrade_to_1}
+_UPGRADES = {1: _upgrade_to_1, 2: _upgrade_to_2}
 
 
 def _run_step(db_path: str, step: int) -> None:
@@ -534,6 +591,9 @@ def initialise(db_path: str = DEFAULT_DB_PATH) -> None:
 
         conn.execute(_DEFLECTION_HISTOGRAMS_SQL)
 
+        for statement in _INVOLS_TABLES_SQL:
+            conn.execute(statement)
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS event_map (
                 file_id      INTEGER NOT NULL REFERENCES files(id),
@@ -705,7 +765,7 @@ def set_file_descriptors_bulk(
 
 
 _ANALYSIS_TABLES: tuple[str, ...] = (
-    "analysis_results", "event_histograms", "event_map",
+    "analysis_results", "event_histograms", "event_map", "invols_assignments",
 )
 # Rows that die with the file rather than with its analysis.  deflection_
 # histograms is here and not above deliberately: it is measured at import from
@@ -713,6 +773,7 @@ _ANALYSIS_TABLES: tuple[str, ...] = (
 # throw it away — nothing about a new verdict changes what the deflection was.
 _FILE_CHILD_TABLES: tuple[str, ...] = (
     "file_metadata", "analysis_queue", "deflection_histograms",
+    "invols_group_members",
 )
 
 
@@ -1530,6 +1591,7 @@ def write_analysis_results_multi(
     code_version: Optional[str],
     db_path: str = DEFAULT_DB_PATH,
     conn: Optional[sqlite3.Connection] = None,
+    commit: bool = True,
 ) -> None:
     """Batched write_analysis_result for several analysis_types under the same (file_id, params_json, code_version) — one..."""
     if not values or code_version is None:
@@ -1545,7 +1607,10 @@ def write_analysis_results_multi(
         for atype, value in values.items()
     ]
     if conn is not None:
-        with conn:
+        if commit:
+            with conn:
+                conn.executemany(sql, args)
+        else:
             conn.executemany(sql, args)
         return
     own = get_connection(db_path)
@@ -2927,6 +2992,61 @@ def list_queue(db_path: str = DEFAULT_DB_PATH) -> list[sqlite3.Row]:
     return rows
 
 
+def ensemble_divisors(
+    file_ids: "Optional[Sequence[int]]",
+    db_path: str = DEFAULT_DB_PATH,
+    conn: Optional[sqlite3.Connection] = None,
+) -> "dict[int, float]":
+    """{file_id: divisor} for each given file that has an applied ensemble
+    InvOLS (all assigned files when file_ids is None).  A file with no
+    instrument value has no divisor and is left out."""
+    sql = """
+        SELECT a.file_id, f.inv_ols_nm_v, g.transform_nm_v
+        FROM   invols_assignments a
+        JOIN   invols_groups g ON g.id = a.group_id
+        JOIN   files f         ON f.id = a.file_id
+        WHERE  f.inv_ols_nm_v IS NOT NULL
+    """
+    c = conn or get_connection(db_path)
+    try:
+        if file_ids is None:
+            rows = c.execute(sql).fetchall()
+        else:
+            rows = []
+            for chunk in _sql_chunks(list(file_ids)):
+                ph = ",".join("?" * len(chunk))
+                rows += c.execute(f"{sql} AND a.file_id IN ({ph})", chunk).fetchall()
+    finally:
+        if conn is None:
+            c.close()
+    return {
+        int(r["file_id"]): ensemble_divisor(r["inv_ols_nm_v"], r["transform_nm_v"])
+        for r in rows
+    }
+
+
+def divisor_for_file(
+    file_id: int,
+    own_slope: Optional[float],
+    db_path: str = DEFAULT_DB_PATH,
+    conn: Optional[sqlite3.Connection] = None,
+) -> Optional[float]:
+    """The signed number this file's transform divides by."""
+    ensemble = ensemble_divisors([file_id], db_path, conn).get(file_id)
+    return resolve_divisor(own_slope, ensemble)
+
+
+def file_params_key_for(
+    file_id: int,
+    all_params: str,
+    db_path: str = DEFAULT_DB_PATH,
+    conn: Optional[sqlite3.Connection] = None,
+) -> str:
+    """The cache key this file's results are stored under."""
+    ensemble = ensemble_divisors([file_id], db_path, conn).get(file_id)
+    return cache_key(all_params, ensemble)
+
+
 QUEUE_FRESHNESS = ("fresh", "stale", "new")
 
 
@@ -2946,14 +3066,16 @@ def queue_freshness(
             LEFT JOIN analysis_results r
                    ON r.file_id = q.file_id AND r.analysis_type = 'event'
         """).fetchall()
+        divisors = ensemble_divisors(None, conn=conn)
     finally:
         conn.close()
 
     out: dict[int, str] = {}
     for r in rows:
+        expected = cache_key(params_json, divisors.get(int(r["file_id"])))
         if r["stored_params"] is None:
             out[int(r["file_id"])] = "new"
-        elif r["stored_params"] == params_json and r["stored_code"] == code_version:
+        elif r["stored_params"] == expected and r["stored_code"] == code_version:
             out[int(r["file_id"])] = "fresh"
         else:
             out[int(r["file_id"])] = "stale"
