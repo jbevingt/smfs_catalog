@@ -54,22 +54,27 @@ LEFT, RIGHT, MIDDLE = (Qt.MouseButton.LeftButton, Qt.MouseButton.RightButton,
 
 # ── builders and readers ─────────────────────────────────────────────────────
 
-def _row(i, own, *, source="own", current=True, time_s="auto"):
+def _row(i, own, *, source="own", current=True, time_s="auto", in_use="own"):
     t = T0 + i * HOUR if time_s == "auto" else time_s
     return TraceRow(file_id=i + 1, path=f"/data/f{i + 1}.ibw", time_s=t,
                     instrument_nm_v=199.14, own_nm_v=own, fit_current=current,
                     rms_nm=0.2, source=source,
                     group_id=None if source == "own" else 1,
-                    in_use_nm_v=own)
+                    in_use_nm_v=own if in_use == "own" else in_use)
 
 
 def _rows(values, **kw):
     return [_row(i, v, **kw) for i, v in enumerate(values)]
 
 
+def _items(plot):
+    """Every item in the view's child group, including those added with
+    ignoreBounds=True (which ``ViewBox.addedItems`` leaves out)."""
+    return list(plot.getViewBox().childGroup.childItems())
+
+
 def _scatters(plot):
-    return [it for it in plot.getViewBox().addedItems
-            if isinstance(it, pg.ScatterPlotItem)]
+    return [it for it in _items(plot) if isinstance(it, pg.ScatterPlotItem)]
 
 
 def _spots(plot):
@@ -117,7 +122,7 @@ def _view_y(plot):
 def _horizontal_lines(plot, value):
     """Visible horizontal lines at ``value`` (an InfiniteLine or a flat curve)."""
     found = []
-    for it in plot.getViewBox().addedItems:
+    for it in _items(plot):
         if not it.isVisible():
             continue
         if isinstance(it, pg.InfiniteLine) and it.angle == 0:
@@ -511,4 +516,259 @@ def test_mean_line_moves_to_a_new_value_and_never_doubles(plot):
 def test_mean_line_survives_a_new_set_traces_without_duplicating(plot):
     plot.set_mean_line(200.0)
     plot.set_traces(_rows([199.0, 200.0, 201.0]))
-    assert len(_horizontal_lines(plot, 200.0)) <= 1
+    assert len(_horizontal_lines(plot, 200.0)) == 1
+
+
+# ── C1: the points are the own-fit value, and are named so ───────────────────
+
+def _left_label(plot) -> str:
+    left = plot.getAxis("left")
+    return f"{left.labelText} {left.labelUnits}"
+
+
+def test_own_invols_label_is_a_named_constant():
+    from smfs_catalog import variables
+    assert variables.OWN_INVOLS_LABEL == "Own-fit InvOLS"
+
+
+def test_left_axis_is_named_own_fit_invols_with_its_unit(plot):
+    label = _left_label(plot)
+    assert "Own-fit InvOLS" in label
+    assert "nm/V" in label
+    assert "Transform InvOLS" not in label
+
+
+def test_own_row_tooltip_gives_the_own_fit_value(plot):
+    plot.set_traces([_row(0, 209.62105)])
+    _settle(plot)
+    (sc, pt), = _spots(plot)
+    assert "Own-fit InvOLS: 209.62 nm/V" in _tip(sc, pt)
+
+
+def test_ensemble_row_tooltip_gives_both_values(plot):
+    plot.set_traces([_row(0, 209.62105, source="ensemble", in_use=199.47273)])
+    _settle(plot)
+    (sc, pt), = _spots(plot)
+    tip = _tip(sc, pt)
+    assert "Own-fit InvOLS: 209.62 nm/V" in tip
+    assert "InvOLS in use: 199.47 nm/V" in tip
+
+
+def test_ensemble_row_without_in_use_value_invents_no_number(plot):
+    plot.set_traces([_row(0, 209.62105, source="ensemble", in_use=None)])
+    _settle(plot)
+    (sc, pt), = _spots(plot)
+    tip = _tip(sc, pt)
+    assert "Own-fit InvOLS: 209.62 nm/V" in tip
+    assert not re.search(r"in use:?\s*[-\d]", tip, re.I)
+    assert "nan" not in tip.lower() and "none" not in tip.lower()
+
+
+# ── I1: a left drag on an axis is not a box ──────────────────────────────────
+
+def _axis_centre(plot, name) -> QPoint:
+    scene = plot.getAxis(name).sceneBoundingRect().center()
+    return plot.mapFromScene(scene)
+
+
+class _DragStub:
+    """A drag event as pyqtgraph's AxisItem hands it to the view box
+    (``ViewBox.mouseDragEvent(ev, axis=...)``).  Real mouse events do not reach
+    an axis item offscreen, so the same path is driven directly; the stub was
+    checked to pan a plain ``pg.ViewBox`` along the axis it is given."""
+
+    def __init__(self, last, pos, down, *, start=False, finish=False):
+        self._last, self._pos, self._down = last, pos, down
+        self._start, self._finish = start, finish
+        self.accepted = False
+
+    def button(self): return LEFT
+    def buttons(self): return LEFT
+    def pos(self): return pg.Point(self._pos)
+    def lastPos(self): return pg.Point(self._last)
+    def buttonDownPos(self, *a): return pg.Point(self._down)
+    def scenePos(self): return pg.Point(self._pos)
+    def lastScenePos(self): return pg.Point(self._last)
+    def buttonDownScenePos(self, *a): return pg.Point(self._down)
+    def isStart(self): return self._start
+    def isFinish(self): return self._finish
+    def accept(self): self.accepted = True
+    def ignore(self): pass
+    def modifiers(self): return Qt.KeyboardModifier.NoModifier
+
+
+def _axis_drag(vb, axis, step):
+    """Drag by `step` pixels along `axis` (0 = x, 1 = y) in three events."""
+    a, b = (100, 100), (100 + step[0], 100 + step[1])
+    vb.mouseDragEvent(_DragStub(a, a, a, start=True), axis=axis)
+    vb.mouseDragEvent(_DragStub(a, b, a), axis=axis)
+    vb.mouseDragEvent(_DragStub(b, b, a, finish=True), axis=axis)
+
+
+@pytest.mark.parametrize("axis, step", [(1, (0, 40)), (0, (40, 0))],
+                         ids=["left-axis", "bottom-axis"])
+@pytest.mark.parametrize("has_box", [False, True], ids=["no-box", "box-kept"])
+def test_left_drag_on_an_axis_pans_and_draws_no_box(plot, axis, step, has_box):
+    _prepare_for_drag(plot)
+    if has_box:
+        plot.commit_box(T0, T0 + HOUR, 10, 20)
+    before_box = plot.box()
+    before_view = plot.getViewBox().viewRange()
+    spy = _Spy(plot.box_drawn)
+    _axis_drag(plot.getViewBox(), axis, step)
+    assert plot.box() == before_box
+    assert spy.calls == []
+    after = plot.getViewBox().viewRange()
+    assert after[axis] != pytest.approx(before_view[axis])      # it panned
+    assert after[1 - axis] == pytest.approx(before_view[1 - axis])
+
+
+# ── I2: a slow click with a tiny movement keeps the box ──────────────────────
+
+def test_slow_click_with_one_pixel_movement_selects_and_keeps_the_box(plot):
+    rows = _rows([200.0, 201.0, 199.0])
+    plot.set_traces(rows)
+    _settle(plot)
+    plot.commit_box(T0 - 10, T0 + 10, 100, 300)
+    box = plot.box()
+    boxes = _Spy(plot.box_drawn)
+    picked = _Spy(plot.point_selected)
+    p = _at(plot, rows[1].time_s, 201.0)
+    _send(plot, QEvent.Type.MouseButtonPress, p, LEFT, LEFT)
+    QTest.qWait(650)                         # past pyqtgraph's 0.5 s drag time
+    _send(plot, QEvent.Type.MouseMove, QPoint(p.x() + 1, p.y()),
+          Qt.MouseButton.NoButton, LEFT)
+    _send(plot, QEvent.Type.MouseButtonRelease, QPoint(p.x() + 1, p.y()), LEFT,
+          Qt.MouseButton.NoButton)
+    assert plot.box() == box
+    assert boxes.calls == []
+    assert picked.calls == [(1,)]
+
+
+# ── I3: a double click outside the plot area opens nothing ───────────────────
+
+def test_double_click_on_the_axis_beneath_an_offscreen_point_opens_nothing(plot):
+    rows = _rows([200.0, 201.0, 199.0])
+    plot.set_traces(rows)
+    vb = plot.getViewBox()
+    per_px = (4 * HOUR) / vb.width()
+    plot.setXRange(T0 + 20 * per_px, T0 + 20 * per_px + 4 * HOUR, padding=0)
+    _settle(plot)
+    p = _at(plot, rows[0].time_s, 200.0)
+    scene = plot.mapToScene(p)
+    assert plot.getAxis("left").sceneBoundingRect().contains(scene), \
+        "test set-up: the point must lie beneath the left axis"
+    opened = _Spy(plot.point_opened)
+    QTest.mouseDClick(plot.viewport(), LEFT, pos=p)
+    QApplication.processEvents()
+    assert opened.calls == []
+
+
+# ── I4: pinned markers stay honest after zoom or pan ─────────────────────────
+
+OUTLIER_AT = 29
+
+
+def _outlier_spot(plot):
+    for sc, pt in _spots(plot):
+        if math.isclose(pt.pos().x(), T0 + OUTLIER_AT * HOUR, abs_tol=1.0):
+            return sc, pt
+    raise AssertionError("the outlier has no spot")
+
+
+def _view(plot, lo, hi):
+    plot.setYRange(lo, hi, padding=0)
+    _settle(plot)
+
+
+def test_outlier_inside_a_zoomed_out_view_is_at_its_real_position(plot):
+    plot.set_traces(_rows(_bulk_with(9957.0)))
+    _settle(plot)
+    _view(plot, 0, 11000)
+    sc, pt = _outlier_spot(plot)
+    assert pt.pos().y() == pytest.approx(9957.0)
+    assert pt.symbol() not in TRIANGLES
+    assert not _markers(plot)
+
+
+def test_outlier_goes_back_to_the_top_edge_when_the_view_returns_to_the_bulk(plot):
+    plot.set_traces(_rows(_bulk_with(9957.0)))
+    _view(plot, 0, 11000)
+    _view(plot, 190, 210)
+    sc, pt = _outlier_spot(plot)
+    assert pt.symbol() in TRIANGLES
+    assert 190 <= pt.pos().y() <= 210
+    assert pt.pos().y() >= 210 - 0.1 * 20
+    assert "9957" in _tip(sc, pt)
+
+
+def test_zooming_into_the_bulk_pins_only_the_outlier(plot):
+    values = _bulk_with(9957.0)
+    plot.set_traces(_rows(values))
+    _view(plot, 199.5, 200.5)
+    markers = _markers(plot)
+    assert len(markers) == 1
+    assert math.isclose(markers[0][1].pos().x(), T0 + OUTLIER_AT * HOUR, abs_tol=1.0)
+    real = sorted(values[:OUTLIER_AT])
+    drawn = sorted(pt.pos().y() for _, pt in _points(plot))
+    assert drawn == pytest.approx(real)           # off-screen, not pinned
+
+
+def test_box_around_a_zoomed_out_outlier_contains_it(plot):
+    from smfs_catalog.invols_stats import points_in_box
+    values = _bulk_with(9957.0)
+    times = [T0 + i * HOUR for i in range(len(values))]
+    plot.set_traces(_rows(values))
+    _view(plot, 0, 11000)
+    _, pt = _outlier_spot(plot)
+    box = (T0 - HOUR, T0 + 31 * HOUR, 9000.0, 10500.0)
+    assert box[2] <= pt.pos().y() <= box[3]
+    mask = points_in_box(times, values, box)
+    assert mask[OUTLIER_AT] and mask.sum() == 1
+    bulk_box = (T0 - HOUR, T0 + 31 * HOUR, 190.0, 210.0)
+    mask = points_in_box(times, values, bulk_box)
+    assert not mask[OUTLIER_AT] and mask.sum() == OUTLIER_AT
+
+
+def test_low_outlier_behaves_the_same_at_the_bottom_edge(plot):
+    values = _bulk_with(12.5)
+    plot.set_traces(_rows(values))
+    _view(plot, 0, 300)
+    sc, pt = _outlier_spot(plot)
+    assert pt.pos().y() == pytest.approx(12.5)
+    assert pt.symbol() not in TRIANGLES
+    _view(plot, 190, 210)
+    sc, pt = _outlier_spot(plot)
+    assert pt.symbol() in TRIANGLES
+    assert 190 <= pt.pos().y() <= 190 + 0.1 * 20
+    assert "12.5" in _tip(sc, pt)
+    _view(plot, 199.5, 200.5)
+    assert len(_markers(plot)) == 1
+
+
+# ── I5: auto-range follows the bulk ──────────────────────────────────────────
+
+def test_auto_range_stays_near_the_bulk_with_a_mean_line_and_an_outlier(plot):
+    plot.set_traces(_rows(_bulk_with(9957.0)))
+    plot.set_mean_line(525.23)
+    plot.autoRange()
+    _settle(plot)
+    lo, hi = _view_y(plot)
+    assert hi < 300
+    assert lo <= 199.0 and hi >= 201.0
+
+
+# ── n: press, release, double-click, release on a point ──────────────────────
+
+def test_click_then_double_click_sequence_selects_once_and_opens_once(plot):
+    rows = _rows([200.0, 201.0, 199.0])
+    plot.set_traces(rows)
+    _settle(plot)
+    picked, opened = _Spy(plot.point_selected), _Spy(plot.point_opened)
+    p = _at(plot, rows[1].time_s, 201.0)
+    _send(plot, QEvent.Type.MouseButtonPress, p, LEFT, LEFT)
+    _send(plot, QEvent.Type.MouseButtonRelease, p, LEFT, Qt.MouseButton.NoButton)
+    _send(plot, QEvent.Type.MouseButtonDblClick, p, LEFT, LEFT)
+    _send(plot, QEvent.Type.MouseButtonRelease, p, LEFT, Qt.MouseButton.NoButton)
+    assert picked.calls == [(1,)]
+    assert opened.calls == [(1,)]
