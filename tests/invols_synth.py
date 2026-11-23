@@ -246,11 +246,11 @@ _CONTACT_NM = 200.0     # piezo position of the contact point
 _PULL_START_NM = 320.0  # the tether pull begins here (past the post-snap-off mask)
 _PULL_END_NM = 420.0    # ... and ruptures here (before the baseline region)
 _PULL_DEPTH_NM = 80.0   # deflection at the rupture, towards the surface
+_SPRING_CONSTANT = 10.0  # pN/nm
 
 
 def make_force_curve(slope=-0.95, instrument=199.14, deep_slope=None,
-                     deep_pts=200, spring_constant=10.0,
-                     path="synthetic.ibw"):
+                     deep_pts=200):
     """A ForceCurve with a known approach contact slope and one rupture.
 
     Approach: piezo falls from 600 nm to 0; free (noisy, seeded) down to the
@@ -281,7 +281,7 @@ def make_force_curve(slope=-0.95, instrument=199.14, deep_slope=None,
                                      rng.normal(0.0, 0.4, _POINTS), 0.0)
     from smfs_catalog.curve_loader import ForceCurve
     return ForceCurve(
-        path=path, piezo_appr=piezo_appr, defl_appr=defl_appr,
+        path="synthetic.ibw", piezo_appr=piezo_appr, defl_appr=defl_appr,
         piezo_retr=piezo_retr, defl_retr=defl_retr,
-        spring_constant=spring_constant, sample_rate_hz=20000.0,
+        spring_constant=_SPRING_CONSTANT, sample_rate_hz=20000.0,
         inv_ols_nm_v=instrument)

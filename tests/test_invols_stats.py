@@ -316,3 +316,8 @@ def test_a_finite_positive_instrument_value_is_usable():
 def test_no_value_zero_negative_and_non_finite_are_not_usable(value):
     from smfs_catalog import invols_stats
     assert invols_stats.usable_instrument(value) is False
+
+
+def test_the_transform_key_is_the_registered_analysis_type():
+    from smfs_catalog import invols_stats
+    assert invols_stats.TRANSFORM_KEY == "transform_invols_nm_v"

@@ -44,7 +44,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import invols_synth as synth                                  # noqa: E402
-from smfs_catalog import curve_analysis, db, roi_events, roi_pipeline  # noqa: E402
+from smfs_catalog import (curve_analysis, db, invols_store, roi_events,  # noqa: E402
+                          roi_pipeline, signal_processing)
 
 CODE = synth.CODE
 INSTRUMENT = 199.14
@@ -64,7 +65,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def pinned_version(monkeypatch):
     """The code version every module stamps and checks, fixed so these tests
     need no git checkout (invols_synth writes its rows under the same text)."""
-    for module in (curve_analysis, roi_pipeline):
+    for module in (curve_analysis, roi_pipeline, invols_store):
         monkeypatch.setattr(module, "cache_version", lambda: CODE)
 
 
@@ -81,20 +82,20 @@ def _set_window(db_path, points):
     db.update_analysis_param("invols_window_pts", points, db_path)
 
 
-def _analyse(curve, c):
+def _analyse(curve, c, code_ver=CODE):
     p = curve_analysis.pipeline_params_from(db.load_analysis_params(c.db))
     return curve_analysis.analyse_curve(
-        curve, p, db_path=c.db, code_ver=CODE, file_id=c.fid)
+        curve, p, db_path=c.db, code_ver=code_ver, file_id=c.fid)
 
 
 def _event_params(db_path):
     return roi_pipeline.event_params_from(db.load_analysis_params(db_path))
 
 
-def _events(curve, c, stage1=None):
+def _events(curve, c, stage1=None, code_ver=CODE):
     """compute_curve_events_coords the way the pipeline calls it."""
     return roi_pipeline.compute_curve_events_coords(
-        curve, _event_params(c.db), db_path=c.db, code_ver=CODE,
+        curve, _event_params(c.db), db_path=c.db, code_ver=code_ver,
         file_id=c.fid, stage1=stage1,
         param_set=db.load_analysis_params(c.db))
 
@@ -410,3 +411,137 @@ def test_base_2dh_window_is_unchanged_from_main():
         cwd=ROOT, capture_output=True, text=True)
     assert diff.returncode == 0
     assert diff.stdout == ""
+
+
+# ── no code version: the divisor is still the one applied ────────────────────
+
+def test_without_a_code_version_an_ensemble_file_still_uses_the_ensemble_divisor(
+        tmp_path):
+    c = _setup(tmp_path, group=GROUP_T)
+    curve = synth.make_force_curve()
+    reference = _historical(curve, c)
+    result = _events(curve, c, code_ver=None)
+    assert result.invols == pytest.approx(DIVISOR_T, rel=1e-12)
+    assert _forces(result) / _forces(reference) == pytest.approx(
+        SCALE_T, rel=1e-5)
+
+
+def test_without_a_code_version_a_failed_own_fit_under_an_ensemble_carries_on(
+        tmp_path):
+    c = _setup(tmp_path, group=GROUP_T)
+    _set_window(c.db, WINDOW_TOO_LONG)
+    result, _ = _analyse(synth.make_force_curve(), c, code_ver=None)
+    assert math.isnan(result.invols_slope)
+    assert synth.fetch(c.db, "SELECT COUNT(*) FROM analysis_results") == [(0,)]
+
+
+def test_without_a_code_version_an_own_fit_files_numbers_do_not_change(tmp_path):
+    c = _setup(tmp_path)
+    curve = synth.make_force_curve()
+    reference = _historical(curve, c)
+    result = _events(curve, c, code_ver=None)
+    assert np.array_equal(_forces(result), _forces(reference))
+    assert result.invols == reference.invols
+
+
+def test_without_a_code_version_a_failed_own_fit_still_raises(tmp_path):
+    c = _setup(tmp_path)
+    _set_window(c.db, WINDOW_TOO_LONG)
+    curve = synth.make_force_curve()
+    for run in (_analyse, _events):
+        with pytest.raises(curve_analysis.CurveAnalysisError) as raised:
+            run(curve, c, code_ver=None)
+        assert raised.value.stage == "approach invOLS"
+
+
+# ── a failed own fit leaves a usable file's row alone ────────────────────────
+
+def test_a_failed_pass_leaves_the_own_row_and_a_restored_window_still_matches(
+        tmp_path):
+    c = _setup(tmp_path)
+    curve = synth.make_force_curve()
+    _analyse(curve, c)
+    good = _transform_rows(c)
+    assert good[0][0] == pytest.approx(209.62105, rel=1e-6)
+    _set_window(c.db, WINDOW_TOO_LONG)
+    with pytest.raises(curve_analysis.CurveAnalysisError):
+        _analyse(curve, c)
+    assert _transform_rows(c) == good
+    _set_window(c.db, 200)
+    assert _transform_rows(c) == good
+    assert _slope_rows(c) != []
+
+
+# ── an apply landing in the middle of a pass ─────────────────────────────────
+
+APPLIED_SLOPE = -0.95      # the member's own fit: the group's value is 199.14 / 0.95
+
+
+def _apply_in_the_middle(tmp_path, monkeypatch, window=None):
+    """Two files: file 1 is analysed; file 2 holds a current own fit of -0.95.
+    The first call to the own-fit function (made after the pass has looked at
+    the catalog) is preceded by a REAL apply of the group of file 2 to both."""
+    db_path, ids = synth.make_catalog(tmp_path, [
+        {"instrument": INSTRUMENT, "curve_type": "continuous_stretch"},
+        {"instrument": INSTRUMENT, "curve_type": "continuous_stretch",
+         "slope": APPLIED_SLOPE}])
+    c = SimpleNamespace(db=db_path, fid=ids[0], other=ids[1])
+    if window is not None:
+        _set_window(db_path, window)
+    synth.stamp_fit_key(db_path, [c.other])
+    request = invols_store.EnsembleRequest(
+        member_ids=(c.other,), target_ids=tuple(ids), method="all", box=None,
+        fit_settings=invols_store.fit_settings_now(db_path))
+    real, fired = signal_processing.fit_approach_invols, []
+
+    def fit_after_an_apply(*args, **kwargs):
+        if not fired:
+            fired.append(invols_store.apply_ensemble(request, db_path))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(signal_processing, "fit_approach_invols",
+                        fit_after_an_apply)
+    return c, fired
+
+
+def _assert_group_row(c, fired):
+    assert len(fired) == 1
+    group_id = fired[0].group_id
+    assert group_id is not None
+    value, params_json, _ = _transform_row(c)
+    assert value == pytest.approx(INSTRUMENT / 0.95, rel=1e-9)
+    assert json.loads(params_json) == {"invols_group": group_id}
+
+
+def test_an_apply_during_a_successful_fit_is_not_overwritten(
+        tmp_path, monkeypatch):
+    c, fired = _apply_in_the_middle(tmp_path, monkeypatch)
+    _analyse(synth.make_force_curve(), c)
+    _assert_group_row(c, fired)
+
+
+def test_an_apply_during_a_failing_fit_is_not_overwritten_by_null(
+        tmp_path, monkeypatch):
+    c, fired = _apply_in_the_middle(tmp_path, monkeypatch, WINDOW_TOO_LONG)
+    try:
+        _analyse(synth.make_force_curve(), c)
+    except curve_analysis.CurveAnalysisError:
+        pass
+    _assert_group_row(c, fired)
+
+
+@pytest.mark.parametrize("window", [None, WINDOW_TOO_LONG],
+                         ids=["fit succeeds", "fit fails"])
+def test_through_analyse_file_the_group_row_and_an_ensemble_keyed_event_survive(
+        tmp_path, monkeypatch, window):
+    c, fired = _apply_in_the_middle(tmp_path, monkeypatch, window)
+    monkeypatch.setattr(curve_analysis, "load_force_curve",
+                        lambda path: synth.make_force_curve())
+    curve_analysis.analyse_file(c.fid, synth.path_of(1), c.db)
+    _assert_group_row(c, fired)
+    all_params = curve_analysis.pipeline_params_from(
+        db.load_analysis_params(c.db)).all_params
+    divisor = -1.0 * INSTRUMENT / (INSTRUMENT / 0.95)
+    rows = synth.fetch(c.db, "SELECT value, params_json FROM analysis_results "
+                       "WHERE file_id = ? AND analysis_type = 'event'", (c.fid,))
+    assert rows == [(1.0, f"{all_params}|invols:{json.dumps(divisor)}")]
