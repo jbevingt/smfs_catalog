@@ -39,6 +39,22 @@ TRANSFORM = "transform_invols_nm_v"
 UNUSABLE = [None, 0.0, -5.0, float("inf")]
 
 
+@pytest.fixture(autouse=True)
+def _pinned_code_version(monkeypatch):
+    """The code identity is pinned, so the file does not depend on a git
+    checkout (a built or exported copy has none)."""
+    from smfs_catalog import provenance
+    monkeypatch.setattr(provenance, "cache_version", lambda: "test-build")
+    monkeypatch.setattr(store, "cache_version", lambda: "test-build",
+                        raising=False)
+
+
+def _no_code_identity(monkeypatch):
+    from smfs_catalog import provenance
+    monkeypatch.setattr(provenance, "cache_version", lambda: None)
+    monkeypatch.setattr(store, "cache_version", lambda: None, raising=False)
+
+
 def _hour(n):
     """Unix seconds of 2026-03-18 `n`:00 local time (the fixture's times)."""
     return datetime.datetime(2026, 3, 18, n).timestamp()
@@ -477,6 +493,8 @@ def broken_after_apply(request, tmp_path):
     store.apply_ensemble(_request(db_path), db_path)
     _execute(db_path, "UPDATE files SET inv_ols_nm_v = ? WHERE id = 1",
              (request.param,))
+    # A stored Transform InvOLS row exists for file 1, and must still not show.
+    assert [r for r in _transform_rows(db_path) if r[0] == 1][0][1] is not None
     return db_path, ids
 
 
@@ -504,6 +522,143 @@ def test_reading_does_not_delete_the_assignment(broken_after_apply):
     store.curve_label(synth.path_of(1), -0.95, 199.14, db_path)
     assert synth.fetch(db_path, "SELECT group_id FROM invols_assignments "
                        "WHERE file_id = 1") == [(1,)]
+
+
+# ── One settings snapshot, taken inside the transaction ───────────────────────
+
+def _window_of(params_json):
+    return json.loads(params_json)["window_pts"]
+
+
+def test_settings_changing_during_apply_cannot_mislabel_the_group(
+        tmp_path, monkeypatch):
+    """Fits are stored under window 150 and the setting is now 100.  A second
+    connection sets it back to 150 right after apply's first read of the
+    settings.  Either apply refuses, or the group names the window the members
+    were actually fitted under."""
+    db_path, ids = _standard(tmp_path)
+    db.update_analysis_param("invols_window_pts", 150, db_path)
+    synth.stamp_fit_key(db_path, ids)                    # fitted under 150
+    db.update_analysis_param("invols_window_pts", 100, db_path)
+    request = _request(db_path)
+    real, seen = db.load_analysis_params, []
+
+    def flips_after_the_first_read(*args, **kwargs):
+        result = real(*args, **kwargs)
+        has_conn = kwargs.get("conn") is not None or len(args) > 1
+        if not has_conn and not seen:
+            seen.append(1)
+            db.update_analysis_param("invols_window_pts", 150, db_path)
+        return result
+
+    monkeypatch.setattr(db, "load_analysis_params", flips_after_the_first_read)
+    try:
+        store.apply_ensemble(request, db_path)
+    except store.InvolsApplyError:
+        assert _rows(db_path, "invols_groups") == []
+        return
+    (settings_json,), = synth.fetch(db_path, "SELECT fit_settings_json FROM invols_groups")
+    member_windows = {_window_of(p) for (p,) in synth.fetch(
+        db_path, "SELECT params_json FROM analysis_results WHERE "
+        "analysis_type = 'invols_slope' AND file_id IN (1, 2, 3)")}
+    assert member_windows == {150}
+    assert json.loads(settings_json)["invols_window_pts"] == 150
+
+
+def test_setting_changed_just_before_the_transaction_opens_refuses(
+        tmp_path, monkeypatch):
+    db_path, _ = _standard(tmp_path)                     # fitted under the default
+    request = _request(db_path)
+    before = _state(db_path)
+    real = store._write_transaction
+
+    def changes_the_setting_first(path):
+        db.update_analysis_param("invols_window_pts", 150, path)
+        return real(path)
+
+    monkeypatch.setattr(store, "_write_transaction", changes_the_setting_first)
+    with pytest.raises(store.InvolsApplyError):
+        store.apply_ensemble(request, db_path)
+    assert _state(db_path) == before
+
+
+# ── in_use_nm_v is the stored Transform InvOLS ────────────────────────────────
+
+def test_in_use_is_the_stored_row_for_an_own_fit_file(tmp_path):
+    db_path, ids = _standard(tmp_path)
+    synth.add_result(db_path, ids[0], TRANSFORM, 123.45, "{}")   # not 209.62
+    rows = {r.file_id: r for r in store.trace_rows(_paths(), db_path)}
+    assert rows[1].source == "own"
+    assert rows[1].in_use_nm_v == 123.45
+
+
+def test_in_use_is_the_stored_row_for_an_ensemble_file(tmp_path):
+    db_path, ids = _standard(tmp_path)
+    synth.add_group(db_path, ids[:3], 210.0)
+    synth.add_result(db_path, ids[0], TRANSFORM, 111.11, "{}")   # not 210
+    rows = {r.file_id: r for r in store.trace_rows(_paths(), db_path)}
+    assert rows[1].source == "ensemble"
+    assert rows[1].in_use_nm_v == 111.11
+
+
+def test_in_use_is_none_for_an_own_fit_file_with_no_stored_row(tmp_path):
+    db_path, _ = _standard(tmp_path)
+    assert _transform_rows(db_path) == []
+    rows = store.trace_rows(_paths(), db_path)
+    assert [r.in_use_nm_v for r in rows] == [None] * 4
+
+
+# ── Smaller items ─────────────────────────────────────────────────────────────
+
+def test_every_target_skipped_writes_nothing(tmp_path):
+    db_path, ids = _standard(tmp_path)
+    _execute(db_path, "UPDATE files SET inv_ols_nm_v = NULL WHERE id IN (3, 4)")
+    before = _state(db_path)
+    result = store.apply_ensemble(
+        _request(db_path, members=(1, 2), targets=(3, 4)), db_path)
+    assert result.group_id is None
+    assert result.n_written == 0
+    assert result.skipped_no_instrument == (3, 4)
+    assert _state(db_path) == before
+    assert before["invols_groups"] == [] and before["invols_group_members"] == []
+
+
+def test_the_same_path_twice_gives_one_row(tmp_path):
+    db_path, _ = _standard(tmp_path)
+    rows = store.trace_rows([synth.path_of(1), synth.path_of(1)], db_path)
+    assert [r.file_id for r in rows] == [1]
+
+
+def test_no_code_identity_refuses_apply_ensemble(tmp_path, monkeypatch):
+    db_path, _ = _standard(tmp_path)
+    request = _request(db_path)
+    before = _state(db_path)
+    _no_code_identity(monkeypatch)
+    with pytest.raises(store.InvolsApplyError):
+        store.apply_ensemble(request, db_path)
+    assert _state(db_path) == before
+
+
+def test_no_code_identity_refuses_apply_own(tmp_path, monkeypatch):
+    db_path, _ = _standard(tmp_path)
+    store.apply_ensemble(_request(db_path), db_path)
+    before = _state(db_path)
+    _no_code_identity(monkeypatch)
+    with pytest.raises(store.InvolsApplyError):
+        store.apply_own((1, 2, 3, 4), db_path)
+    assert _state(db_path) == before
+    assert len(before["invols_assignments"]) == 4
+
+
+def test_request_settings_that_differ_from_those_in_force_are_ignored(tmp_path):
+    db_path, _ = _standard(tmp_path)
+    wrong = {"invols_offset_pts": 1.0, "invols_window_pts": 9.0,
+             "spectral_cutoff_hz": 5.0}
+    request = store.EnsembleRequest((1, 2, 3), (1, 2, 3, 4), "all", None, wrong)
+    store.apply_ensemble(request, db_path)
+    (settings_json,), = synth.fetch(db_path, "SELECT fit_settings_json FROM invols_groups")
+    assert json.loads(settings_json) == store.fit_settings_now(db_path)
+    assert json.loads(settings_json) != wrong
 
 
 def _execute(db_path, sql, params=()):

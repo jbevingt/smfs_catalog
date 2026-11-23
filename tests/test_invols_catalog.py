@@ -407,3 +407,30 @@ def test_the_upgrade_keeps_a_transform_invols_row_already_in_the_catalog(
         "FROM analysis_results WHERE file_id = 1 "
         "AND analysis_type = 'transform_invols_nm_v'") == [
         (123.456, "mine", "old", "t2")]
+
+
+# ── load_analysis_params inside someone else's transaction ────────────────────
+
+def test_load_analysis_params_can_read_inside_an_open_transaction(tmp_path):
+    """With `conn`, the read joins the caller's open BEGIN IMMEDIATE: same
+    answer as a plain call, no commit of the caller's work, and no waiting on
+    the write lock the caller already holds."""
+    db_path, _ = synth.make_catalog(tmp_path, [])
+    db.update_analysis_param("invols_window_pts", 150, db_path)
+    plain = db.load_analysis_params(db_path).as_dict()
+    assert plain["invols_window_pts"] == 150
+
+    conn = db.get_connection(db_path)
+    conn.isolation_level = None
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("INSERT INTO files (path, filename, first_seen, last_seen) "
+                     "VALUES ('/synth/marker.ibw', 'marker.ibw', 'x', 'x')")
+        inside = db.load_analysis_params(db_path, conn=conn).as_dict()
+        assert conn.in_transaction                      # nothing was committed
+        conn.execute("ROLLBACK")
+    finally:
+        conn.close()
+    assert inside == plain
+    assert synth.fetch(db_path, "SELECT COUNT(*) FROM files "
+                       "WHERE filename = 'marker.ibw'") == [(0,)]
