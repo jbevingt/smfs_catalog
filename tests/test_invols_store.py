@@ -694,3 +694,45 @@ def test_curve_label_shows_no_rms_when_there_is_no_own_slope(tmp_path):
     db_path, _ = _label_catalog(tmp_path)
     label = store.curve_label(synth.path_of(1), None, INSTRUMENT, db_path)
     assert "RMS=" not in label
+
+
+# curve_label(..., own_rms): the RMS of the fit on screen, when the caller has it.
+
+def test_curve_label_shows_a_given_own_rms(tmp_path):
+    db_path, _ = _label_catalog(tmp_path)        # stored RMS 0.1948
+    label = store.curve_label(synth.path_of(1), -0.9852, INSTRUMENT, db_path,
+                              own_rms=0.3)
+    assert "RMS=0.3" in label
+    assert "0.1948" not in label
+
+
+def test_curve_label_shows_a_given_own_rms_whatever_is_stored(tmp_path):
+    db_path, _ = _label_catalog(tmp_path)
+    label = store.curve_label(synth.path_of(1), -0.9, INSTRUMENT, db_path,
+                              own_rms=0.3)
+    assert "RMS=0.3" in label
+
+
+def test_curve_label_shows_a_given_own_rms_for_an_unknown_file(tmp_path):
+    db_path, _ = _label_catalog(tmp_path)
+    label = store.curve_label(synth.path_of(99), -0.9852, INSTRUMENT, db_path,
+                              own_rms=0.3)
+    assert "RMS=0.3" in label
+
+
+def test_curve_label_without_own_rms_falls_back_to_the_stored_comparison(
+        tmp_path):
+    db_path, _ = _label_catalog(tmp_path)
+    match = store.curve_label(synth.path_of(1), -0.9852, INSTRUMENT, db_path,
+                              own_rms=None)
+    other = store.curve_label(synth.path_of(1), -0.9, INSTRUMENT, db_path,
+                              own_rms=None)
+    assert "RMS=0.1948 nm" in match
+    assert "RMS=" not in other
+
+
+def test_curve_label_shows_no_rms_without_a_slope_even_if_one_is_given(tmp_path):
+    db_path, _ = _label_catalog(tmp_path)
+    label = store.curve_label(synth.path_of(1), None, INSTRUMENT, db_path,
+                              own_rms=0.3)
+    assert "RMS=" not in label

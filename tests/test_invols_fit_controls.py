@@ -545,3 +545,145 @@ def test_a_failing_label_does_not_crash_the_redraw(
     win.update_curve(_curve())                      # must return
     xs, _ys = win._low_appr.getData()
     assert xs is not None and len(xs) > 0
+
+
+def test_a_failing_label_clears_text_and_tooltip_after_a_good_one(
+        catalog, open_windows, monkeypatch):
+    win = _window(catalog[0], open_windows)
+    assert "InvOLS in use" in _shown(win, _curve())     # a good label first
+    assert win._invols_label.toolTip()
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("label failed")
+    monkeypatch.setattr(invols_store, "curve_label", boom)
+    win.update_curve(_curve())
+    assert win._invols_label.text() == ""
+    assert win._invols_label.toolTip() == ""
+
+
+# ── a redraw must not discard a value still being typed ──────────────────────
+# Keyboard tracking is off, so typed digits stay uncommitted until Enter.
+
+def _type_without_enter(win, box, digits):
+    from PyQt6.QtTest import QTest
+    win.show()
+    box.setFocus()
+    box.selectAll()
+    QTest.keyClicks(box.lineEdit(), digits)
+
+
+def _press_enter(box):
+    from PyQt6.QtCore import Qt
+    from PyQt6.QtTest import QTest
+    QTest.keyClick(box, Qt.Key.Key_Return)
+
+
+def test_typing_in_the_window_box_survives_a_redraw(catalog, open_windows):
+    db_path, _ids = catalog
+    win = _window(db_path, open_windows)
+    win.update_curve(_curve())
+    box = win._invols_window_spinbox
+    _type_without_enter(win, box, "150")
+    win.update_curve(_curve())                    # a queue step, say
+    _press_enter(box)
+    assert box.value() == 150
+    assert _stored(db_path)[1] == 150
+
+
+def test_typing_in_the_offset_box_survives_a_redraw(catalog, open_windows):
+    db_path, _ids = catalog
+    win = _window(db_path, open_windows)
+    win.update_curve(_curve())
+    box = win._invols_offset_spinbox
+    _type_without_enter(win, box, "30")
+    win.update_curve(_curve())
+    _press_enter(box)
+    assert box.value() == 30
+    assert _stored(db_path)[0] == 30
+
+
+def test_a_redraw_adopts_a_catalog_value_when_the_user_is_not_typing(
+        catalog, open_windows):
+    db_path, _ids = catalog
+    win = _window(db_path, open_windows)
+    win.update_curve(_curve())
+    _controls(db_path, open_windows).window_spinbox.setValue(120)
+    assert win._invols_window_spinbox.value() == 200
+    win.update_curve(_curve())
+    assert win._invols_window_spinbox.value() == 120
+    assert win._invols_window_pts == 120
+
+
+# ── the RMS of a genuine fit shows even when nothing is stored ───────────────
+
+def _no_code_identity(monkeypatch):
+    from smfs_catalog import provenance
+    for module in (curve_analysis, roi_pipeline, invols_store, dw, provenance):
+        monkeypatch.setattr(module, "cache_version", lambda: None)
+
+
+def test_rms_shows_for_a_good_fit_when_the_build_has_no_code_identity(
+        catalog, open_windows, monkeypatch):
+    db_path, _ids = catalog
+    _no_code_identity(monkeypatch)
+    win = _window(db_path, open_windows)
+    text = _shown(win, _curve())
+    assert "slope=-0.9852" in text
+    assert "RMS=" in text
+    assert synth.fetch(db_path, "SELECT COUNT(*) FROM analysis_results WHERE "
+                       "analysis_type = 'invols_slope'") == [(0,)]
+
+
+def test_rms_shows_for_a_good_fit_of_a_curve_with_no_catalog_row(
+        catalog, open_windows):
+    win = _window(catalog[0], open_windows)
+    curve = dataclasses.replace(_curve(), path=synth.path_of(99))
+    text = _shown(win, curve)
+    assert "slope=-0.9852" in text
+    assert "RMS=" in text
+
+
+# ── two owners with different invOLS values ──────────────────────────────────
+
+def test_switching_the_queue_to_another_owner_adopts_their_invols_values(
+        tmp_path, open_windows):
+    db_path, ids = synth.make_catalog(tmp_path, [
+        {"instrument": INSTRUMENT, "measured_at": "2026-01-01 10:00:00"},
+        {"instrument": INSTRUMENT, "measured_at": "2026-01-01 11:00:00"},
+    ])
+    con = sqlite3.connect(db_path)
+    try:
+        with con:
+            con.execute("UPDATE files SET experimentalist = 'Ada' WHERE id = ?", (ids[0],))
+            con.execute("UPDATE files SET experimentalist = 'Ben' WHERE id = ?", (ids[1],))
+    finally:
+        con.close()
+    db.merge_experimentalist_profile(
+        "Ada", {"invols_offset_pts": 40.0, "invols_window_pts": 180.0}, db_path)
+    db.merge_experimentalist_profile(
+        "Ben", {"invols_offset_pts": 60.0, "invols_window_pts": 220.0}, db_path)
+    win = _window(db_path, open_windows)
+    win._sync_profile_owner(synth.path_of(1))
+    win.update_curve(_curve(1))
+    assert (win._invols_offset_pts, win._invols_window_pts) == (40, 180)
+
+    con = sqlite3.connect(db_path)
+    try:
+        with con:
+            con.execute("DELETE FROM analysis_queue WHERE file_id = ?", (ids[0],))
+    finally:
+        con.close()
+    assert db.active_param_owner(db_path) == "Ben"
+    win._sync_profile_owner(synth.path_of(2))
+    win.update_curve(_curve(2))
+
+    assert (win._invols_offset_pts, win._invols_window_pts) == (60, 220)
+    assert (win._invols_offset_spinbox.value(),
+            win._invols_window_spinbox.value()) == (60, 220)
+    rows = synth.fetch(db_path, "SELECT params_json FROM analysis_results "
+                       "WHERE file_id = 2 AND analysis_type = 'invols_slope'")
+    assert rows == [(synth.current_fit_key(db_path),)]
+    ada = db.get_experimentalist_profile("Ada", db_path)
+    ben = db.get_experimentalist_profile("Ben", db_path)
+    assert (ada["invols_offset_pts"], ada["invols_window_pts"]) == (40.0, 180.0)
+    assert (ben["invols_offset_pts"], ben["invols_window_pts"]) == (60.0, 220.0)
