@@ -144,6 +144,10 @@ SIG_DEFL     = SERIES_LINE[0]   # blue
 SIG_PIEZO    = SERIES_LINE[1]   # orange
 SIG_FILTERED = SERIES_LINE[2]   # violet
 
+# The invOLS plot: a trace's own per-curve fit against a value applied from an ensemble.
+INVOLS_OWN      = SERIES_LINE[0]   # blue
+INVOLS_ENSEMBLE = SERIES_LINE[1]   # orange
+
 # ── F. Hit / non-hit — tone, not hue ─────────────────────────────────────────
 # Separating populations by TONE keeps every hue free for whatever is drawn over
 # them, so a fit over the hits can use any model hue without colliding.
