@@ -168,9 +168,13 @@ def build_v0(path: str) -> None:
         with con:
             con.execute("ALTER TABLE files DROP COLUMN substrate")
             con.execute("ALTER TABLE files DROP COLUMN sample_prep")
-            con.execute("CREATE TABLE watched_directories "
-                        "(id INTEGER PRIMARY KEY, path TEXT)")
-            con.execute("ALTER TABLE files ADD COLUMN directory_id INTEGER")
+            # As v1.3.0 declared them (db.py at 26abb28).
+            con.execute("CREATE TABLE watched_directories ("
+                        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                        "path TEXT NOT NULL UNIQUE, "
+                        "added_at TEXT NOT NULL, last_scan TEXT)")
+            con.execute("ALTER TABLE files ADD COLUMN directory_id INTEGER "
+                        "REFERENCES watched_directories(id)")
             con.execute("CREATE INDEX idx_files_directory_id "
                         "ON files(directory_id)")
         con.execute("PRAGMA user_version = 0")

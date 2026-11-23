@@ -38,9 +38,11 @@ def _version0(tmp_path, name="v0.db"):
     catalog_v1.build_v0(path)
     con = sqlite3.connect(path)
     with con:
-        con.execute("INSERT INTO files (path, filename, first_seen, last_seen, "
-                    "inv_ols_nm_v, event) VALUES ('/v0/a.ibw', 'a.ibw', 'f', "
-                    "'l', 199.14, 'event')")
+        con.execute("INSERT INTO watched_directories (path, added_at) "
+                    "VALUES ('/v0', 't')")
+        con.execute("INSERT INTO files (path, directory_id, filename, "
+                    "first_seen, last_seen, inv_ols_nm_v, event) VALUES "
+                    "('/v0/a.ibw', 1, 'a.ibw', 'f', 'l', 199.14, 'event')")
         con.execute("INSERT INTO analysis_results VALUES "
                     "(1, 'invols_slope', -0.95, '{}', 'abc', 't')")
         con.execute("INSERT INTO meta VALUES ('built_host', 'somewhere')")
@@ -148,6 +150,27 @@ def test_a_version_0_catalog_reaches_version_2(tmp_path):
         path, "SELECT value FROM analysis_results WHERE file_id = 1 "
         "AND analysis_type = 'transform_invols_nm_v'")
     assert transform[0][0] == pytest.approx(199.14 / 0.95, rel=1e-9)
+
+
+def test_the_version_0_fixture_keeps_files_pointing_at_watched_directories(
+        tmp_path):
+    path = _version0(tmp_path)
+    keys = synth.fetch(path, "SELECT \"table\", \"from\", \"to\" "
+                       "FROM pragma_foreign_key_list('files')")
+    assert ("watched_directories", "directory_id", "id") in keys
+    assert synth.fetch(path, "SELECT directory_id FROM files") == [(1,)]
+
+
+def test_a_file_pointing_at_a_watched_directory_survives_the_upgrade(tmp_path):
+    """Step 1 must drop the column before the table it references."""
+    path = _version0(tmp_path)
+    db.initialise(path)
+    assert synth.fetch(
+        path, "SELECT path, filename, inv_ols_nm_v, event FROM files") == [
+        ("/v0/a.ibw", "a.ibw", 199.14, "event")]
+    assert "watched_directories" not in _columns(path)
+    assert "directory_id" not in _columns(path)["files"]
+    assert synth.fetch(path, "PRAGMA foreign_key_check") == []
 
 
 def test_a_version_1_catalog_still_upgrades_to_version_2(tmp_path):
