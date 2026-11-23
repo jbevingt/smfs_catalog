@@ -38,6 +38,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import catalog_v1                                            # noqa: E402
 from smfs_catalog import curve_loader, db, scanner          # noqa: E402
 import run_dashboard as rd                                   # noqa: E402
 
@@ -47,7 +48,12 @@ BUILT_V130 = os.path.expanduser("~/.local/share/smfs_catalog/test_v1.3.0.db")
 # columns.  When the layout changes, the layout test fails: raise
 # db.CATALOG_VERSION, add the step that carries the version before it, and
 # record the new fingerprint here.
-LAYOUT = {1: "1b441cda936a3478ae5b30846ae353daef1a2ee7853a6a7165c0e376d6951de4"}
+LAYOUT = {1: "1b441cda936a3478ae5b30846ae353daef1a2ee7853a6a7165c0e376d6951de4",
+          # Version 1 plus invols_groups, invols_group_members and
+          # invols_assignments, as the plan's CREATE TABLE statements declare
+          # them; worked out from tests/catalog_v1.py plus that SQL, not from
+          # db.py.
+          2: "e004f8b400ace661fdac257264f2c65ecebd99ec61c49b59e9bdeedc823d4b2b"}
 
 
 def _digest(path):
@@ -162,6 +168,14 @@ def test_every_version_has_its_step():
     assert sorted(db._UPGRADES) == list(range(1, db.CATALOG_VERSION + 1))
 
 
+def test_the_version_1_builder_makes_the_layout_recorded_for_version_1(tmp_path):
+    """The upgrade tests start from tests/catalog_v1.py; it must stay version 1."""
+    path = str(tmp_path / "v1.db")
+    catalog_v1.build_v1(path)
+    assert _fingerprint(_layout(path)) == LAYOUT[1]
+    assert _version(path) == 1
+
+
 def test_the_layout_cannot_change_without_the_version(tmp_path):
     layout = _layout(_new(tmp_path))
     assert LAYOUT.get(db.CATALOG_VERSION) == _fingerprint(layout), (
@@ -170,6 +184,20 @@ def test_the_layout_cannot_change_without_the_version(tmp_path):
         "and record this fingerprint: %s\nlayout:\n%s"
         % (db.CATALOG_VERSION, _fingerprint(layout),
            json.dumps(layout, indent=1, sort_keys=True)))
+
+
+def test_a_new_catalog_has_the_layout_recorded_for_version_2(tmp_path):
+    assert _fingerprint(_layout(_new(tmp_path))) == LAYOUT[2]
+
+
+def test_a_changed_table_no_longer_matches_the_layout_recorded_for_version_2(tmp_path):
+    """The layout guard has teeth: one extra column and the fingerprint moves."""
+    path = _new(tmp_path)
+    con = sqlite3.connect(path)
+    with con:
+        con.execute("ALTER TABLE files ADD COLUMN not_in_the_layout TEXT")
+    con.close()
+    assert _fingerprint(_layout(path)) != LAYOUT[2]
 
 
 # ── Newer, current, older ─────────────────────────────────────────────────────

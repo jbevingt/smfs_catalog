@@ -81,7 +81,8 @@ def seed():
     """Rebuild the whole fixture — two dirs, three files, full analysis."""
     conn = _db.get_connection(DB)
     with conn:
-        for tbl in ("event_map", "event_histograms", "analysis_results",
+        for tbl in ("invols_assignments", "invols_group_members", "invols_groups",
+                    "event_map", "event_histograms", "analysis_results",
                     "file_metadata", "analysis_queue", "files"):
             conn.execute(f"DELETE FROM {tbl}")
         for path in (IN_SCOPE_A, IN_SCOPE_B, OUT_OF_SCOPE):
@@ -117,6 +118,18 @@ def seed():
             conn.execute(
                 "INSERT INTO analysis_queue (file_id, enqueued_at, status)"
                 " VALUES (?, datetime('now'), 'pending')", (fid,))
+        # One applied invOLS group holding all three files.
+        gid = conn.execute(
+            "INSERT INTO invols_groups (created_at, method, n, average,"
+            " transform_nm_v, fit_settings_json)"
+            " VALUES (datetime('now'), 'all', 3, 'arithmetic', 210.0, '{}')"
+        ).lastrowid
+        conn.execute(
+            "INSERT INTO invols_group_members (group_id, file_id)"
+            " SELECT ?, id FROM files", (gid,))
+        conn.execute(
+            "INSERT INTO invols_assignments (file_id, group_id)"
+            " SELECT id, ? FROM files", (gid,))
     conn.close()
 
 
@@ -179,6 +192,13 @@ check("(b) erase KEEPS the manual Primary pick (human curation, not output)",
 check("(b) erase KEEPS the manual Secondary pick",
       seg["secondary_segment_idx"] == 1)
 
+check("(a) erase deleted the cohort's invOLS assignments",
+      n_rows("invols_assignments", IN_SCOPE_A) == 0
+      and n_rows("invols_assignments", IN_SCOPE_B) == 0)
+check("(a) erase KEEPS the cohort's group membership (it goes with the file)",
+      n_rows("invols_group_members", IN_SCOPE_A) == 1)
+check("(d) erase left the out-of-scope file's invOLS assignment alone",
+      n_rows("invols_assignments", OUT_OF_SCOPE) == 1)
 check("(d) erase left the out-of-scope file's verdict alone",
       rows("SELECT event FROM files WHERE path = ?",
            (_db.normalize_path(OUT_OF_SCOPE),))[0]["event"] == "event")
@@ -205,7 +225,15 @@ check("(c) their file_metadata rows are gone",
 check("(c) their queue entries are gone",
       len(rows("SELECT file_id FROM analysis_queue")) == 1)
 
+check("(c) their invOLS assignments are gone",
+      len(rows("SELECT file_id FROM invols_assignments")) == 1)
+check("(c) their invOLS group membership is gone",
+      len(rows("SELECT file_id FROM invols_group_members")) == 1)
+
 check("(d) the out-of-scope file survives intact", file_exists_in_db(OUT_OF_SCOPE))
+check("(d) so does its invOLS assignment and membership",
+      n_rows("invols_assignments", OUT_OF_SCOPE) == 1
+      and n_rows("invols_group_members", OUT_OF_SCOPE) == 1)
 check("(d) so does its analysis", n_rows("event_map", OUT_OF_SCOPE) == 1)
 check("(d) so does its queue entry", n_rows("analysis_queue", OUT_OF_SCOPE) == 1)
 
