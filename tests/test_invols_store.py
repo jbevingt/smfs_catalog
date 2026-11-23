@@ -736,3 +736,10 @@ def test_curve_label_shows_no_rms_without_a_slope_even_if_one_is_given(tmp_path)
     label = store.curve_label(synth.path_of(1), None, INSTRUMENT, db_path,
                               own_rms=0.3)
     assert "RMS=" not in label
+
+
+def test_curve_label_shows_no_rms_for_a_nan_slope_even_with_an_own_rms(tmp_path):
+    db_path, _ = _label_catalog(tmp_path)
+    label = store.curve_label(synth.path_of(1), float("nan"), INSTRUMENT,
+                              db_path, own_rms=0.3)
+    assert "RMS=" not in label

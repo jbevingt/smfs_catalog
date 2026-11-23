@@ -687,3 +687,147 @@ def test_switching_the_queue_to_another_owner_adopts_their_invols_values(
     ben = db.get_experimentalist_profile("Ben", db_path)
     assert (ada["invols_offset_pts"], ada["invols_window_pts"]) == (40.0, 180.0)
     assert (ben["invols_offset_pts"], ben["invols_window_pts"]) == (60.0, 220.0)
+
+
+# ── typed digits must not follow the user to another owner ───────────────────
+# Owners A and B hold the SAME invOLS values, so a box that skips an unchanged
+# value would keep A's half-typed digits across the switch.
+
+def _lose_focus(box):
+    from PyQt6.QtCore import QEvent, Qt
+    from PyQt6.QtGui import QFocusEvent
+    QApplication.sendEvent(
+        box, QFocusEvent(QEvent.Type.FocusOut, Qt.FocusReason.TabFocusReason))
+
+
+def _same_values_two_owner_catalog(tmp_path):
+    db_path, ids = synth.make_catalog(tmp_path, [
+        {"instrument": INSTRUMENT, "measured_at": "2026-01-01 10:00:00"},
+        {"instrument": INSTRUMENT, "measured_at": "2026-01-01 11:00:00"},
+    ])
+    con = sqlite3.connect(db_path)
+    try:
+        with con:
+            con.execute("UPDATE files SET experimentalist = 'Ada' WHERE id = ?", (ids[0],))
+            con.execute("UPDATE files SET experimentalist = 'Ben' WHERE id = ?", (ids[1],))
+    finally:
+        con.close()
+    for name in ("Ada", "Ben"):
+        db.merge_experimentalist_profile(
+            name, {"invols_offset_pts": 50.0, "invols_window_pts": 200.0}, db_path)
+    return db_path, ids
+
+
+def _switch_to_ben(win, db_path, ids):
+    con = sqlite3.connect(db_path)
+    try:
+        with con:
+            con.execute("DELETE FROM analysis_queue WHERE file_id = ?", (ids[0],))
+    finally:
+        con.close()
+    assert db.active_param_owner(db_path) == "Ben"
+    win._sync_profile_owner(synth.path_of(2))
+    win.update_curve(_curve(2))
+
+
+def _assert_both_owners_unchanged(db_path):
+    assert _stored(db_path) == (50, 200)
+    for name in ("Ada", "Ben"):
+        profile = db.get_experimentalist_profile(name, db_path)
+        assert profile["invols_offset_pts"] == 50.0, name
+        assert profile["invols_window_pts"] == 200.0, name
+
+
+def _typed_then_switched(tmp_path, open_windows, attr, digits):
+    db_path, ids = _same_values_two_owner_catalog(tmp_path)
+    win = _window(db_path, open_windows)
+    win._sync_profile_owner(synth.path_of(1))
+    win.update_curve(_curve(1))
+    box = getattr(win, attr)
+    _type_without_enter(win, box, digits)
+    _switch_to_ben(win, db_path, ids)
+    return db_path, win, box
+
+
+def test_digits_typed_for_one_owner_do_not_reach_another_owners_window(
+        tmp_path, open_windows):
+    db_path, _win, box = _typed_then_switched(
+        tmp_path, open_windows, "_invols_window_spinbox", "150")
+    _press_enter(box)
+    assert box.value() == 200
+    _assert_both_owners_unchanged(db_path)
+
+
+def test_digits_typed_for_one_owner_do_not_reach_another_owners_offset(
+        tmp_path, open_windows):
+    db_path, _win, box = _typed_then_switched(
+        tmp_path, open_windows, "_invols_offset_spinbox", "30")
+    _press_enter(box)
+    assert box.value() == 50
+    _assert_both_owners_unchanged(db_path)
+
+
+def test_focus_loss_commits_typed_digits_when_nothing_intervenes(
+        catalog, open_windows):
+    """Positive control for the focus-loss test below: the helper really does
+    commit a typed value."""
+    db_path, _ids = catalog
+    win = _window(db_path, open_windows)
+    win.update_curve(_curve())
+    box = win._invols_window_spinbox
+    _type_without_enter(win, box, "150")
+    _lose_focus(box)
+    assert _stored(db_path)[1] == 150
+
+
+def test_focus_loss_after_an_owner_switch_does_not_save_the_old_digits(
+        tmp_path, open_windows):
+    db_path, _win, box = _typed_then_switched(
+        tmp_path, open_windows, "_invols_window_spinbox", "150")
+    _lose_focus(box)
+    assert box.value() == 200
+    _assert_both_owners_unchanged(db_path)
+
+
+# ── the widget's two ways of setting values ──────────────────────────────────
+
+def test_load_values_replaces_typed_text_even_when_the_value_is_unchanged(
+        catalog, open_windows):
+    db_path, _ids = catalog
+    controls = _controls(db_path, open_windows)
+    emitted = _counter(controls.changed)
+    _type_without_enter(controls, controls.window_spinbox, "150")
+    assert "150" in controls.window_spinbox.lineEdit().text()
+    stored_before, profile_before = _stored(db_path), _profile(db_path)
+    controls.load_values(50, 200)
+    text = controls.window_spinbox.lineEdit().text()
+    assert "200" in text and "150" not in text
+    _press_enter(controls.window_spinbox)
+    assert controls.window_pts() == 200
+    assert emitted == []
+    assert _stored(db_path) == stored_before == (50, 200)
+    assert _profile(db_path) == profile_before
+
+
+def test_load_values_moves_the_boxes_without_emitting_or_writing(
+        catalog, open_windows):
+    db_path, _ids = catalog
+    controls = _controls(db_path, open_windows)
+    emitted = _counter(controls.changed)
+    stored_before, profile_before = _stored(db_path), _profile(db_path)
+    controls.load_values(80, 90)
+    assert (controls.offset_pts(), controls.window_pts()) == (80, 90)
+    assert emitted == []
+    assert _stored(db_path) == stored_before
+    assert _profile(db_path) == profile_before
+
+
+def test_set_values_keeps_typed_text_when_the_value_is_unchanged(
+        catalog, open_windows):
+    db_path, _ids = catalog
+    controls = _controls(db_path, open_windows)
+    _type_without_enter(controls, controls.window_spinbox, "150")
+    controls.set_values(50, 200)
+    assert "150" in controls.window_spinbox.lineEdit().text()
+    _press_enter(controls.window_spinbox)
+    assert controls.window_pts() == 150
