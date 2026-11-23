@@ -75,7 +75,8 @@ V1_OPEN_TABLES = ("meta", "thresholds", "experimentalist_profiles",
 
 
 def _fill_version_1(path):
-    """Rows in every table a catalog of that age could hold, written by hand."""
+    """Hand-written rows in most tables; event_histograms, deflection_histograms
+    and gmm_fits are left empty."""
     con = sqlite3.connect(path)
     with con:
         for number, (name, instrument, slope) in enumerate(V1_FILES, start=1):
@@ -96,9 +97,11 @@ def _fill_version_1(path):
             con.execute("INSERT INTO event_map VALUES (?, 'P', 'zzz', '{}', 't3')",
                         (number,))
         con.execute("INSERT INTO meta VALUES ('built_host', 'somewhere')")
-        # A real version-1 catalog has already been through the one-time
-        # criteria migrations (they run on every open and leave these marks);
-        # without them they would run again on this fixture and park the bound.
+        # These marks keep criteria_migration.reconcile (which `initialise`
+        # runs after the upgrade steps) from acting on the seeded threshold:
+        # this test is about the version-2 step, not about reconcile.  (A
+        # catalog can lack them, for example after a version-0 upgrade
+        # interrupted before reconcile ran; that path is not tested here.)
         con.execute("INSERT INTO meta VALUES "
                     "('criteria_bounds_reconciled_v1', '2026-01-01T00:00:00')")
         con.execute("INSERT INTO meta VALUES "
@@ -360,3 +363,47 @@ def test_removing_a_file_deletes_its_assignment_and_member_rows(tmp_path):
     assert _table_file_ids(db_path, "invols_assignments") == {ids[1]}
     assert _table_file_ids(db_path, "invols_group_members") == {ids[1]}
     assert synth.fetch(db_path, "SELECT id FROM files") == [(ids[1],)]
+
+
+# ── An assigned file whose instrument value is no value ───────────────────────
+
+@pytest.mark.parametrize("bad", [None, 0.0, -100.0, float("inf")])
+def test_an_assigned_file_with_an_unusable_instrument_value_uses_its_own_fit(
+        tmp_path, bad):
+    files = [{"instrument": bad, "slope": -0.95, "event_params": "P"},
+             {"instrument": INSTRUMENT, "slope": -0.95, "event_params": "P"},
+             {"instrument": INSTRUMENT, "slope": -0.95, "event_params": "P"}]
+    db_path, (odd, healthy, own) = synth.make_catalog(tmp_path, files)
+    synth.add_group(db_path, [odd, healthy], GROUP_VALUE)
+
+    got = db.ensemble_divisors(None, db_path=db_path)
+    assert set(got) == {healthy}
+    assert db.ensemble_divisors([odd], db_path=db_path) == {}
+    assert db.divisor_for_file(odd, -0.95, db_path=db_path) == -0.95
+    assert db.file_params_key_for(odd, "P", db_path=db_path) == "P"
+    assert db.queue_freshness("P", "C", db_path) == {
+        odd: "fresh", healthy: "stale", own: "fresh"}
+
+
+# ── The backfill never replaces a value already there ─────────────────────────
+
+def test_the_upgrade_keeps_a_transform_invols_row_already_in_the_catalog(
+        tmp_path):
+    path = str(tmp_path / "v1.db")
+    catalog_v1.build_v1(path)
+    con = sqlite3.connect(path)
+    with con:
+        con.execute("INSERT INTO files (id, path, filename, first_seen, "
+                    "last_seen, inv_ols_nm_v) VALUES (1, '/v1/A.ibw', "
+                    "'A.ibw', 'f', 'l', 199.14)")
+        con.execute("INSERT INTO analysis_results VALUES "
+                    "(1, 'invols_slope', -0.95, 'slope-key', 'new', 't1')")
+        con.execute("INSERT INTO analysis_results VALUES "
+                    "(1, 'transform_invols_nm_v', 123.456, 'mine', 'old', 't2')")
+    con.close()
+    db.initialise(path)
+    assert synth.fetch(
+        path, "SELECT value, params_json, code_version, computed_at "
+        "FROM analysis_results WHERE file_id = 1 "
+        "AND analysis_type = 'transform_invols_nm_v'") == [
+        (123.456, "mine", "old", "t2")]

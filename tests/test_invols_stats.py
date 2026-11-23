@@ -302,3 +302,17 @@ def test_display_range_pads_five_percent_of_the_span():
     r = display_range([10.0, 20.0])
     assert r.lo == pytest.approx(9.5, rel=1e-12)
     assert r.hi == pytest.approx(20.5, rel=1e-12)
+
+
+# ------------------------------------------------------ usable_instrument
+
+def test_a_finite_positive_instrument_value_is_usable():
+    from smfs_catalog import invols_stats
+    assert invols_stats.usable_instrument(199.14) is True
+
+
+@pytest.mark.parametrize("value", [
+    None, 0, 0.0, -100.0, float("nan"), float("inf"), float("-inf")])
+def test_no_value_zero_negative_and_non_finite_are_not_usable(value):
+    from smfs_catalog import invols_stats
+    assert invols_stats.usable_instrument(value) is False

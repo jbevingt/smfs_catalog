@@ -155,6 +155,29 @@ V1_TABLES = (
 )
 
 
+def build_v0(path: str) -> None:
+    """Create `path` as an empty catalog from before the version number.
+
+    It has the version-1 tables, less files.substrate and files.sample_prep,
+    plus the watched_directories table and files.directory_id (with its index)
+    that version 1 drops; `user_version` is 0.
+    """
+    build_v1(path)
+    con = sqlite3.connect(path)
+    try:
+        with con:
+            con.execute("ALTER TABLE files DROP COLUMN substrate")
+            con.execute("ALTER TABLE files DROP COLUMN sample_prep")
+            con.execute("CREATE TABLE watched_directories "
+                        "(id INTEGER PRIMARY KEY, path TEXT)")
+            con.execute("ALTER TABLE files ADD COLUMN directory_id INTEGER")
+            con.execute("CREATE INDEX idx_files_directory_id "
+                        "ON files(directory_id)")
+        con.execute("PRAGMA user_version = 0")
+    finally:
+        con.close()
+
+
 def build_v1(path: str) -> None:
     """Create `path` as an empty catalog in the version-1 layout."""
     con = sqlite3.connect(path)
