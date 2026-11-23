@@ -26,6 +26,7 @@ def test_one_parameter_snapshot_reaches_multi_event_persistence(monkeypatch):
     monkeypatch.setattr(_ca._db, "load_analysis_params", load_params)
     monkeypatch.setattr(_ca._db, "get_analysis_result", lambda *a, **k: None)
     monkeypatch.setattr(_ca._db, "get_curve_type", lambda *a, **k: "continuous_stretch")
+    monkeypatch.setattr(_ca._db, "ensemble_divisors", lambda *a, **k: {})
     monkeypatch.setattr(_ca._db, "write_analysis_result", lambda *a, **k: None)
     monkeypatch.setattr(_ca._db, "get_or_store_deflection_histogram",
                         lambda *a, **k: None)
@@ -70,6 +71,7 @@ def test_edit_during_curve_reruns_before_current_result_is_published(monkeypatch
     monkeypatch.setattr(_ca._db, "load_analysis_params", lambda _p: next(snapshots))
     monkeypatch.setattr(_ca._db, "get_analysis_result", lambda *a, **k: None)
     monkeypatch.setattr(_ca._db, "get_curve_type", lambda *a, **k: "continuous_stretch")
+    monkeypatch.setattr(_ca._db, "ensemble_divisors", lambda *a, **k: {})
     monkeypatch.setattr(_ca._db, "write_analysis_result", lambda *a, **k: None)
     monkeypatch.setattr(_ca._db, "get_or_store_deflection_histogram",
                         lambda *a, **k: None)
@@ -113,6 +115,7 @@ def test_the_slow_path_stores_the_loaded_curves_histogram_and_the_fast_path_does
     monkeypatch.setattr(_ca._db, "get_analysis_result",
                         lambda *a, **k: cached_verdict[0])
     monkeypatch.setattr(_ca._db, "get_curve_type", lambda *a, **k: "continuous_stretch")
+    monkeypatch.setattr(_ca._db, "ensemble_divisors", lambda *a, **k: {})
     monkeypatch.setattr(_ca._db, "write_analysis_result", lambda *a, **k: None)
     monkeypatch.setattr(_ca._db, "delete_event_map", lambda *a, **k: None)
     monkeypatch.setattr(
