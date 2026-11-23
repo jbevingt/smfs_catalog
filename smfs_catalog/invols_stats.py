@@ -29,10 +29,12 @@ class DisplayRange:
     side: tuple[int, ...]
 
 
+def usable_instrument(value: float | None) -> bool:
+    return value is not None and math.isfinite(value) and value > 0
+
+
 def own_transform_nm_v(instrument_nm_v: float | None, slope: float | None) -> float | None:
-    if instrument_nm_v is None or slope is None:
-        return None
-    if not (math.isfinite(instrument_nm_v) and instrument_nm_v > 0):
+    if slope is None or not usable_instrument(instrument_nm_v):
         return None
     if not math.isfinite(slope) or slope * DIVISOR_SIGN <= 0:
         return None

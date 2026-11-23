@@ -27,6 +27,7 @@ from .analysis_params import (
 )
 from .invols_stats import (
     cache_key, ensemble_divisor, own_transform_nm_v, resolve_divisor,
+    usable_instrument,
 )
 from .path_pattern import path_matches
 
@@ -403,24 +404,26 @@ def _upgrade_to_2(conn: sqlite3.Connection) -> None:
 
 
 # Step n carries a catalog from version n - 1 to version n.  Each takes the
-# connection _run_step holds its transaction on, and commits nothing itself.
+# connection _run_steps holds its transaction on, and commits nothing itself.
 _UPGRADES = {1: _upgrade_to_1, 2: _upgrade_to_2}
 
 
-def _run_step(db_path: str, step: int) -> None:
-    """Run one upgrade step and record its number, as one transaction.
+def _run_steps(db_path: str, first: int, last: int) -> None:
+    """Run upgrade steps first..last and record the final number, as ONE transaction.
 
     The sqlite3 module commits a schema change the moment it runs unless a
-    transaction is already open, so this opens one itself.  An interrupted
-    step then leaves the catalog exactly as it was before the step, still
-    carrying the number before it, and its backup is a backup of the original.
+    transaction is already open, so this opens one itself.  A step that fails
+    rolls back every step before it too, leaving the catalog exactly as it was,
+    still carrying its original number, so its backup stays a copy of the
+    original.
     """
     conn = get_connection(db_path)
     conn.isolation_level = None              # the transaction is opened here
     try:
         conn.execute("BEGIN IMMEDIATE")
-        _UPGRADES[step](conn)
-        conn.execute(f"PRAGMA user_version = {int(step)}")
+        for step in range(first, last + 1):
+            _UPGRADES[step](conn)
+        conn.execute(f"PRAGMA user_version = {int(last)}")
         conn.execute("COMMIT")
     except BaseException:
         if conn.in_transaction:
@@ -435,18 +438,18 @@ def initialise(db_path: str = DEFAULT_DB_PATH) -> None:
 
     The stored version is read before anything is written.  A catalog newer
     than this code raises CatalogTooNew and is left exactly as it was.  An
-    older one is upgraded in place, one numbered step at a time; the app
-    writes its backup first (run_dashboard.open_catalog).
+    older one is upgraded in place, all its pending steps in one transaction so
+    a failure leaves it unchanged at its original version; the app writes its
+    backup first (run_dashboard.open_catalog).
     """
     found = catalog_version(db_path)
     if found is not None and found > CATALOG_VERSION:
         raise CatalogTooNew(too_new_message(db_path, found))
 
-    # An older catalog is brought up to date first, one numbered step at a
-    # time, before anything below touches it.
-    if found is not None:
-        for step in range(found + 1, CATALOG_VERSION + 1):
-            _run_step(db_path, step)
+    # An older catalog is brought up to date first, all pending steps in one
+    # transaction, before anything below touches it.
+    if found is not None and found < CATALOG_VERSION:
+        _run_steps(db_path, found + 1, CATALOG_VERSION)
 
     import json
     db_dir = os.path.dirname(db_path)
@@ -2999,13 +3002,12 @@ def ensemble_divisors(
 ) -> "dict[int, float]":
     """{file_id: divisor} for each given file that has an applied ensemble
     InvOLS (all assigned files when file_ids is None).  A file with no
-    instrument value has no divisor and is left out."""
+    usable instrument value has no divisor and is left out."""
     sql = """
         SELECT a.file_id, f.inv_ols_nm_v, g.transform_nm_v
         FROM   invols_assignments a
         JOIN   invols_groups g ON g.id = a.group_id
         JOIN   files f         ON f.id = a.file_id
-        WHERE  f.inv_ols_nm_v IS NOT NULL
     """
     c = conn or get_connection(db_path)
     try:
@@ -3015,13 +3017,14 @@ def ensemble_divisors(
             rows = []
             for chunk in _sql_chunks(list(file_ids)):
                 ph = ",".join("?" * len(chunk))
-                rows += c.execute(f"{sql} AND a.file_id IN ({ph})", chunk).fetchall()
+                rows += c.execute(f"{sql} WHERE a.file_id IN ({ph})", chunk).fetchall()
     finally:
         if conn is None:
             c.close()
     return {
         int(r["file_id"]): ensemble_divisor(r["inv_ols_nm_v"], r["transform_nm_v"])
         for r in rows
+        if usable_instrument(r["inv_ols_nm_v"])
     }
 
 
