@@ -211,7 +211,9 @@ def curve_label(path: str, own_slope: float | None,
         fid = db.get_file_id(path, conn=conn)
         ids = [] if fid is None else [fid]
         group = _ensemble_groups(conn, ids).get(fid)
-        rms = _results(conn, ids).get(fid, {}).get("invols_rms", (None,))[0]
+        stored = _results(conn, ids).get(fid, {})
+        rms = stored.get("invols_rms", (None,))[0]
+        stored_slope = stored.get("invols_slope", (None,))[0]
     finally:
         conn.close()
     own = own_transform_nm_v(instrument_nm_v, own_slope)
@@ -222,7 +224,8 @@ def curve_label(path: str, own_slope: float | None,
                  f"own fit {_nm_v(own)}"]
     if own_slope is not None and math.isfinite(own_slope):
         parts.append("slope=" + quantities.format_value("invols_slope", own_slope))
-    if rms is not None and math.isfinite(rms):
+    if (own_slope is not None and stored_slope == own_slope
+            and rms is not None and math.isfinite(rms)):
         parts.append("RMS=" + quantities.format_value("invols_rms", rms, with_unit=True))
     return " · ".join(parts)
 

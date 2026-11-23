@@ -77,8 +77,6 @@ class InvolsFitControls(QWidget):
 
     def _on_edit(self, key: str, value: int) -> None:
         _db.update_analysis_param(key, float(value), self._db_path)
-        owner = _db.active_param_owner(self._db_path)
-        _db.merge_experimentalist_profile(owner, {key: float(value)}, self._db_path)
         self.changed.emit()
 
     def offset_pts(self) -> int:

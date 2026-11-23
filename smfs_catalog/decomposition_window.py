@@ -767,9 +767,20 @@ class DecompositionWindow(QWidget):
             self.update_curve(self._current_curve)
         self.analysis_params_changed.emit()
 
-    def _on_invols_fit_changed(self) -> None:
+    def _adopt_invols_fit_from_db(self) -> None:
+        self._invols_controls.refresh_from_db()
         self._invols_offset_pts = self._invols_controls.offset_pts()
         self._invols_window_pts = self._invols_controls.window_pts()
+
+    def refresh_invols_fit(self) -> None:
+        """Another control changed the invOLS fit settings: show them, redraw."""
+        self._adopt_invols_fit_from_db()
+        if self._current_curve is not None:
+            self.update_curve(self._current_curve)
+        self.analysis_params_changed.emit()
+
+    def _on_invols_fit_changed(self) -> None:
+        self._adopt_invols_fit_from_db()
         self._save_user_profile()
         if self._current_curve is not None:
             self.update_curve(self._current_curve)
@@ -931,8 +942,6 @@ class DecompositionWindow(QWidget):
             "detection_threshold_appr": self._thresh_appr_val,
             "detection_threshold_retr": self._thresh_retr_val,
             "baseline_anchor_nm":       self._anchor_nm,
-            "invols_offset_pts":        float(self._invols_offset_pts),
-            "invols_window_pts":        float(self._invols_window_pts),
         }, self._db_path)
 
     def update_curve(self, curve: "ForceCurve") -> None:
@@ -997,6 +1006,10 @@ class DecompositionWindow(QWidget):
             from dataclasses import replace
             from .curve_analysis import analyse_curve, pipeline_params_from
             snapshot = _db.load_analysis_params(self._db_path)
+            self._invols_offset_pts = int(snapshot.invols_offset_pts)
+            self._invols_window_pts = int(snapshot.invols_window_pts)
+            self._invols_controls.set_values(
+                self._invols_offset_pts, self._invols_window_pts)
             preview = replace(
                 snapshot,
                 baseline_anchor_nm=self._anchor_nm,
@@ -1046,10 +1059,9 @@ class DecompositionWindow(QWidget):
         # slope comes from `result` (fresh compute or cache hit, either way).
         # The fit-window/intercept/R² diagnostics are persisted alongside the
         # slope (curve_analysis.py, params_invols) and so are ALSO available on
-        # a cache hit via `stage1` — the elif fallback below now only fires for
-        # a curve whose invols_slope was cached before diagnostics started
-        # being persisted; it clears itself the next time that curve is
-        # re-analysed under the current params.
+        # a cache hit via `stage1`.  The line is cleared when there is no slope
+        # or no diagnostics (a curve cached before they were persisted clears
+        # itself the next time it is re-analysed under the current params).
         if result is not None and not np.isnan(result.invols_slope) \
                 and stage1 is not None and stage1.invols_fit_lo_idx is not None:
             lo, hi = stage1.invols_fit_lo_idx, stage1.invols_fit_hi_idx
@@ -1063,8 +1075,7 @@ class DecompositionWindow(QWidget):
         own_slope = None
         if result is not None and not np.isnan(result.invols_slope):
             own_slope = float(result.invols_slope)
-        self._invols_label.setText(_invols_store.curve_label(
-            curve.path, own_slope, curve.inv_ols_nm_v, self._db_path))
+        self._show_invols_label(curve, own_slope)
 
         # ── Baseline fit — retract, anchor region ──────────────────────────────
         # Same pattern as invOLS just above: offset/flatness come from `result`
@@ -1124,6 +1135,16 @@ class DecompositionWindow(QWidget):
         self._n_appr = 0
         self._clear()
 
+    def _show_invols_label(self, curve: "ForceCurve",
+                           own_slope: "float | None") -> None:
+        try:
+            text = _invols_store.curve_label(
+                curve.path, own_slope, curve.inv_ols_nm_v, self._db_path)
+        except Exception:
+            text = ""
+        self._invols_label.setText(text)
+        self._invols_label.setToolTip(text)
+
     def _clear(self) -> None:
         self._context_label.setText("No curve")
         for item in (
@@ -1134,6 +1155,7 @@ class DecompositionWindow(QWidget):
         ):
             item.setData([], [])
         self._invols_label.setText("")
+        self._invols_label.setToolTip("")
         self._baseline_label.setText("")
         for line in (
             self._low_contact, self._low_snapoff,
