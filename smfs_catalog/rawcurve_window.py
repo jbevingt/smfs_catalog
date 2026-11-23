@@ -717,6 +717,7 @@ class RawCurveWindow(QWidget):
             event_params_from,
         )
         from .roi_events import payload_to_events
+        from .invols_stats import cache_key
 
         param_set = _db.load_analysis_params(self._db_path)
         p = pipeline_params_from(param_set)
@@ -724,8 +725,11 @@ class RawCurveWindow(QWidget):
         if code_ver is None:
             return False
 
+        divisor = _db.ensemble_divisors(
+            [file_id], self._db_path).get(file_id)
         verdict = _db.get_analysis_result(
-            file_id, "event", p.all_params, code_ver, self._db_path,
+            file_id, "event", cache_key(p.all_params, divisor), code_ver,
+            self._db_path,
         )
         if verdict is None:
             return False
@@ -748,7 +752,7 @@ class RawCurveWindow(QWidget):
             ep = event_params_from(param_set)
             payload = _db.get_event_map(
                 file_id,
-                event_map_params_json(ep),
+                event_map_params_json(ep, divisor),
                 code_ver,
                 self._db_path,
             )

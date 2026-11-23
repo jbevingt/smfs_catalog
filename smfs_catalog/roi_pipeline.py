@@ -170,9 +170,27 @@ class CurveEventsResult:
     mask_anchor_idx:   int
 
 
-def event_map_params_json(ep: EventParams) -> str:
-    """Stable cache key for event_map — every field that changes the result."""
-    return json.dumps(asdict(ep), sort_keys=True, separators=(",", ":"))
+def event_map_params_json(
+    ep: EventParams, ensemble_divisor: float | None = None,
+) -> str:
+    """Stable cache key for event_map — every field that changes the result.
+    A file whose transform divides by an ensemble value adds that divisor."""
+    document = asdict(ep)
+    if ensemble_divisor is not None:
+        document["invols_divisor"] = ensemble_divisor
+    return json.dumps(document, sort_keys=True, separators=(",", ":"))
+
+
+def _event_map_keys(ep: EventParams, file_ids: list[int], conn) -> dict[int, str]:
+    """{file_id: event_map key}, from one query for every file's divisor."""
+    divisors = _db.ensemble_divisors(file_ids, conn=conn)
+    return {fid: event_map_params_json(ep, divisors.get(fid)) for fid in file_ids}
+
+
+def _resolve_ids(paths: list[str], db_path: str, conn) -> list[tuple[str, int]]:
+    """(path, file_id) for each path the catalog knows."""
+    pairs = ((p, _db.get_file_id(p, db_path, conn=conn)) for p in paths)
+    return [(p, fid) for p, fid in pairs if fid is not None]
 
 
 # ── Single-curve computation (the shared source of truth) ─────────────────────
@@ -296,13 +314,13 @@ def compute_curve_events_coords(
     # set nobody chose.  See event_params_from/db.load_analysis_params.
     _pj = None
     _cached_events = None
+    if can_read_cache:
+        _divisor = _db.ensemble_divisors([file_id], db_path, conn).get(file_id)
+        _pj = event_map_params_json(ep, _divisor)
     if can_read_cache and not force:
-        _pj = event_map_params_json(ep)
         _doc = _db.get_event_map(file_id, _pj, code_ver, db_path, conn=conn)
         if _doc is not None:
             _cached_events = payload_to_events(json.loads(_doc))
-    elif can_read_cache:
-        _pj = event_map_params_json(ep)
 
     # ── offset (baseline) ────────────────────────────────────────────────────
     if stage1 is not None and stage1.offset is not None:
@@ -464,7 +482,7 @@ def populate_event_map(
     """
     param_set = _db.load_analysis_params(db_path)
     ep = event_params_from(param_set, detector=detector)
-    pj = event_map_params_json(ep)
+    pj = event_map_params_json(ep, None)
     cv = cache_version()
 
     n_ok = n_skip = n_notcurve = n_err = 0
@@ -472,13 +490,14 @@ def populate_event_map(
     conn = _db.get_connection(db_path)
     try:
         total = len(paths)
-        for i, path in enumerate(paths):
-            fid = _db.get_file_id(path, db_path, conn=conn)
+        fids = [_db.get_file_id(path, db_path, conn=conn) for path in paths]
+        keys = _event_map_keys(ep, [f for f in fids if f is not None], conn)
+        for i, (path, fid) in enumerate(zip(paths, fids)):
             if fid is None:
                 n_err += 1
                 if len(errors) < 20:
                     errors.append((path, "file_id not found"))
-            elif not force and _db.get_event_map(fid, pj, cv, db_path, conn=conn) is not None:
+            elif not force and _db.get_event_map(fid, keys[fid], cv, db_path, conn=conn) is not None:
                 n_skip += 1
             else:
                 try:
@@ -534,17 +553,15 @@ def assemble_rows(
     from .roi_assembly import project_curve_events
 
     ep = event_params_from(_db.load_analysis_params(db_path), detector=detector)
-    pj = event_map_params_json(ep)
     cv = cache_version()
 
     rows: list[dict] = []
     conn = _db.get_connection(db_path)
     try:
-        for path in paths:
-            fid = _db.get_file_id(path, db_path, conn=conn)
-            if fid is None:
-                continue
-            doc = _db.get_event_map(fid, pj, cv, db_path, conn=conn)
+        found = _resolve_ids(paths, db_path, conn)
+        keys = _event_map_keys(ep, [fid for _, fid in found], conn)
+        for path, fid in found:
+            doc = _db.get_event_map(fid, keys[fid], cv, db_path, conn=conn)
             if not doc:
                 continue
             events = payload_to_events(json.loads(doc))
@@ -897,17 +914,15 @@ def roi_count_histogram(
     from .roi_events import payload_to_events
 
     ep = event_params_from(_db.load_analysis_params(db_path), detector=detector)
-    pj = event_map_params_json(ep)
     cv = cache_version()
 
     hist: dict[int, int] = {}
     conn = _db.get_connection(db_path)
     try:
-        for path in paths:
-            fid = _db.get_file_id(path, db_path, conn=conn)
-            if fid is None:
-                continue
-            doc = _db.get_event_map(fid, pj, cv, db_path, conn=conn)
+        found = _resolve_ids(paths, db_path, conn)
+        keys = _event_map_keys(ep, [fid for _, fid in found], conn)
+        for _path, fid in found:
+            doc = _db.get_event_map(fid, keys[fid], cv, db_path, conn=conn)
             if not doc:
                 continue
             events = payload_to_events(json.loads(doc))
@@ -923,14 +938,14 @@ def roi_count_histogram(
 def coverage(paths: list[str], db_path: str, detector: str | None = None) -> tuple[int, int]:
     """Return (n_with_document, n_total) so the UI can show how much is populated."""
     ep = event_params_from(_db.load_analysis_params(db_path), detector=detector)
-    pj = event_map_params_json(ep)
     cv = cache_version()
     n = 0
     conn = _db.get_connection(db_path)
     try:
-        for path in paths:
-            fid = _db.get_file_id(path, db_path, conn=conn)
-            if fid is not None and _db.get_event_map(fid, pj, cv, db_path, conn=conn) is not None:
+        found = _resolve_ids(paths, db_path, conn)
+        keys = _event_map_keys(ep, [fid for _, fid in found], conn)
+        for _path, fid in found:
+            if _db.get_event_map(fid, keys[fid], cv, db_path, conn=conn) is not None:
                 n += 1
     finally:
         conn.close()

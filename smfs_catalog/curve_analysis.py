@@ -671,8 +671,9 @@ def _lane_force_extension(
     # If a verdict was already cached under this exact parameter signature and
     # scientific-method version, the file is up to date. Return it WITHOUT loading the curve
     # — no disk read, no recompute, no writes.  (Stored as 1.0=event / 0.0=non_event.)
+    file_key = _db.file_params_key_for(file_id, p.all_params, db_path, conn=conn)
     cached_verdict = _db.get_analysis_result(
-        file_id, "event", p.all_params, code_ver, db_path, conn=conn
+        file_id, "event", file_key, code_ver, db_path, conn=conn
     )
     if cached_verdict is not None:
         if _db.load_analysis_params(db_path).revision != param_set.revision:
@@ -712,7 +713,9 @@ def _lane_force_extension(
     # A UI edit is immediately visible to new work, but never injected into a
     # calculation already in flight.  If this curve finished under an older
     # snapshot, rerun before publishing its verdict/current event map.
-    if _db.load_analysis_params(db_path).revision != param_set.revision:
+    if (_db.load_analysis_params(db_path).revision != param_set.revision
+            or _db.file_params_key_for(
+                file_id, p.all_params, db_path, conn=conn) != file_key):
         return _lane_force_extension(file_id, path, db_path, conn=conn)
 
     # A non_event still purges the legacy rupture_force_pn row, if any — see
@@ -728,7 +731,9 @@ def _lane_force_extension(
             param_set=param_set,
         )
 
-    if _db.load_analysis_params(db_path).revision != param_set.revision:
+    if (_db.load_analysis_params(db_path).revision != param_set.revision
+            or _db.file_params_key_for(
+                file_id, p.all_params, db_path, conn=conn) != file_key):
         return _lane_force_extension(file_id, path, db_path, conn=conn)
 
     # The curve is already in memory on this path, so its deflection histogram
@@ -742,7 +747,7 @@ def _lane_force_extension(
     _db.write_analysis_result(
         file_id, "event",
         1.0 if result.event else 0.0,
-        p.all_params, code_ver, db_path, conn=conn,
+        file_key, code_ver, db_path, conn=conn,
     )
     return result.verdict, False
 
