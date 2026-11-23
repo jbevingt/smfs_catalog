@@ -192,13 +192,10 @@ def _is_target(func, names):
     return isinstance(func, ast.Attribute) and func.attr in names
 
 
-def scan_source(source):
-    """(calls inspected, problems) for one module's text.  A problem is a call
-    that omits the second argument, or a use of the function that is not a call
-    (a callable handed on cannot be checked)."""
-    tree = ast.parse(source)
-    names = _bound_names(tree)
-    calls, problems, call_funcs = 0, [], set()
+def _scan_calls(tree, names):
+    """(calls inspected, the id of each called function node, problems) for the
+    calls of the function in `tree`."""
+    calls, call_funcs, problems = 0, set(), []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and _is_target(node.func, names):
             calls += 1
@@ -206,13 +203,30 @@ def scan_source(source):
             if not _passes_second_argument(node):
                 problems.append(f"line {node.lineno}: call without a "
                                 f"second argument")
-    for node in ast.walk(tree):
-        is_ref = (isinstance(node, ast.Name) and node.id in names
-                  and isinstance(node.ctx, ast.Load)) or (
-            isinstance(node, ast.Attribute) and node.attr in names)
-        if is_ref and id(node) not in call_funcs:
-            problems.append(f"line {node.lineno}: used without being called")
-    return calls, problems
+    return calls, call_funcs, problems
+
+
+def _is_reference(node, names):
+    by_name = (isinstance(node, ast.Name) and node.id in names
+               and isinstance(node.ctx, ast.Load))
+    return by_name or (isinstance(node, ast.Attribute) and node.attr in names)
+
+
+def _uncalled_uses(tree, names, call_funcs):
+    """The uses of the function that are not the function of a call."""
+    return [f"line {node.lineno}: used without being called"
+            for node in ast.walk(tree)
+            if _is_reference(node, names) and id(node) not in call_funcs]
+
+
+def scan_source(source):
+    """(calls inspected, problems) for one module's text.  A problem is a call
+    that omits the second argument, or a use of the function that is not a call
+    (a callable handed on cannot be checked)."""
+    tree = ast.parse(source)
+    names = _bound_names(tree)
+    calls, call_funcs, problems = _scan_calls(tree, names)
+    return calls, problems + _uncalled_uses(tree, names, call_funcs)
 
 
 def test_the_scan_flags_a_call_with_no_second_argument():
@@ -276,15 +290,26 @@ def test_every_call_in_the_package_passes_the_second_argument():
 @pytest.fixture()
 def lane(monkeypatch):
     """Stand-ins for loading and analysing a curve, so the lane's own cache
-    logic runs against the real catalog.  `hooks` run inside a call."""
-    state = SimpleNamespace(calls=[], hooks=[])
+    logic runs against the real catalog.  `hooks` run inside an analyse_curve
+    call; `persist_hooks` run inside the stored-event-map step, which is
+    reached (and recorded in `persists`) only when `event` is set."""
+    state = SimpleNamespace(calls=[], hooks=[], persists=[], persist_hooks=[],
+                            event=False)
 
     def fake_analyse_curve(curve, p, *, db_path, code_ver, file_id, conn=None):
         state.calls.append(file_id)
         if state.hooks:
             state.hooks.pop(0)()
-        return SimpleNamespace(event=False, verdict="non_event"), None
+        verdict = "event" if state.event else "non_event"
+        return SimpleNamespace(event=state.event, verdict=verdict), None
 
+    def fake_persist(file_id, curve, db_path, code_ver, **kwargs):
+        state.persists.append(file_id)
+        if state.persist_hooks:
+            state.persist_hooks.pop(0)()
+
+    monkeypatch.setattr(curve_analysis, "_persist_multi_event_roi",
+                        fake_persist)
     monkeypatch.setattr(curve_analysis, "load_force_curve",
                         lambda path: SimpleNamespace(defl_retr=np.zeros(4)))
     monkeypatch.setattr(curve_analysis, "analyse_curve", fake_analyse_curve)
@@ -355,6 +380,32 @@ def test_a_divisor_that_changes_during_a_pass_reruns_the_file(catalog, lane):
     assert was_cached is False
     assert verdict == "non_event"
     assert _event_row(catalog.db, catalog.ens)[0] == _event_key(catalog.db, DIV_B)
+
+
+def test_a_divisor_that_changes_while_the_event_map_is_stored_reruns_the_file(
+        catalog, lane):
+    lane.event = True
+    lane.persist_hooks.append(
+        lambda: synth.add_group(catalog.db, [catalog.ens], GROUP_B))
+    verdict, was_cached = _analyse(catalog, catalog.ens)
+    assert lane.calls == [catalog.ens, catalog.ens]
+    assert lane.persists == [catalog.ens, catalog.ens]
+    assert (verdict, was_cached) == ("event", False)
+    assert _event_row(catalog.db, catalog.ens) == (
+        _event_key(catalog.db, DIV_B), 1.0)
+
+
+def test_a_divisor_that_changes_during_analysis_stores_no_event_map_for_the_old_one(
+        catalog, lane):
+    lane.event = True
+    lane.hooks.append(
+        lambda: synth.add_group(catalog.db, [catalog.ens], GROUP_B))
+    verdict, was_cached = _analyse(catalog, catalog.ens)
+    assert lane.calls == [catalog.ens, catalog.ens]
+    assert lane.persists == [catalog.ens]          # only the re-run stores one
+    assert (verdict, was_cached) == ("event", False)
+    assert _event_row(catalog.db, catalog.ens) == (
+        _event_key(catalog.db, DIV_B), 1.0)
 
 
 def test_a_divisor_that_holds_during_a_pass_does_not_rerun_the_file(catalog, lane):
