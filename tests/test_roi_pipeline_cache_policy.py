@@ -45,6 +45,7 @@ def pipeline_stubs(monkeypatch):
     monkeypatch.setattr(roi_events, "events_to_payload", lambda _events: {"v": 1, "rois": []})
     monkeypatch.setattr(roi_pipeline._db, "get_analysis_result", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(roi_pipeline._db, "get_event_map", lambda *_args, **_kwargs: "{}")
+    monkeypatch.setattr(roi_pipeline._db, "ensemble_divisors", lambda *_args, **_kwargs: {})
 
     def write(*_args, **_kwargs):
         calls["write"] += 1

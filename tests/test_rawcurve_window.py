@@ -123,6 +123,7 @@ def test_persisted_non_event_overlays_are_read_without_curve_analysis(monkeypatc
     monkeypatch.setattr(raw._db, "load_analysis_params", lambda _path: params)
     monkeypatch.setattr(curve_analysis, "pipeline_params_from", lambda _p: projected)
     monkeypatch.setattr(raw._db, "get_analysis_result", lambda *_args: 0.0)
+    monkeypatch.setattr(raw._db, "ensemble_divisors", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(
         raw._db,
         "get_analysis_results_multi",
