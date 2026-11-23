@@ -1,5 +1,14 @@
-"""The invOLS plot: one point per trace, time on x and nm/V on y, with a box
-drawn by a left drag.  It takes ``TraceRow``s and touches no database."""
+# Copyright (C) 2026 Joseph Hamill
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version. See the LICENSE file in the
+# repository root, or <https://www.gnu.org/licenses/>.
+
+"""The invOLS plot: one point per trace, time on x and the own-fit nm/V on y,
+with a box drawn by a left drag.  It takes ``TraceRow``s and touches no
+database."""
 from __future__ import annotations
 
 import math
@@ -23,20 +32,33 @@ _SINGLE_TIME_HALF_SPAN_S = 60.0
 _PIN_INSET = 0.02
 _POINT_SIZE = 8
 _MARKER_SIZE = 11
+_CLICK_PX = 4.0
 _SOURCE_TEXT = {"own": "own fit", "ensemble": "ensemble value"}
 
 
 class _BoxViewBox(pg.ViewBox):
     box_dragged = pyqtSignal(float, float, float, float, bool)
+    click_at = pyqtSignal(object)
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._moved_far = False
 
     def mouseDragEvent(self, ev, axis=None):
-        if ev.button() != Qt.MouseButton.LeftButton:
+        if axis is not None or ev.button() != Qt.MouseButton.LeftButton:
             super().mouseDragEvent(ev, axis)
             return
         ev.accept()
-        start = self.mapToView(ev.buttonDownPos())
-        now = self.mapToView(ev.pos())
-        self.box_dragged.emit(start.x(), now.x(), start.y(), now.y(), ev.isFinish())
+        start, now = ev.buttonDownPos(), ev.pos()
+        if ev.isStart():
+            self._moved_far = False
+        self._moved_far = self._moved_far or pg.Point(now - start).length() >= _CLICK_PX
+        if not self._moved_far:
+            if ev.isFinish():
+                self.click_at.emit(ev.buttonDownScenePos())
+            return
+        a, b = self.mapToView(start), self.mapToView(now)
+        self.box_dragged.emit(a.x(), b.x(), a.y(), b.y(), ev.isFinish())
 
 
 def _drawn(rows: Sequence[TraceRow]) -> list[tuple[int, TraceRow]]:
@@ -64,10 +86,12 @@ def _x_view(times: list[float]) -> tuple[float, float]:
 
 
 def _tip(x, y, data) -> str:
-    unit = quantities.unit_of(TRANSFORM_KEY)
-    lines = [data["name"],
-             f"{variables.label(TRANSFORM_KEY)}: {data['value']:.2f} {unit} "
-             f"({_SOURCE_TEXT.get(data['source'], data['source'])})"]
+    own = quantities.format_value(TRANSFORM_KEY, data["value"], with_unit=True)
+    lines = [data["name"], f"{variables.OWN_INVOLS_LABEL}: {own}",
+             f"Source: {_SOURCE_TEXT.get(data['source'], data['source'])}"]
+    in_use = quantities.format_value(TRANSFORM_KEY, data["in_use"], with_unit=True)
+    if data["source"] == "ensemble" and in_use:
+        lines.append(f"InvOLS in use: {in_use}")
     if data["side"]:
         lines.append("Outside the plotted range, shown at its edge")
     if not data["current"]:
@@ -87,7 +111,7 @@ def _spot(index: int, row: TraceRow, side: int, lo: float, hi: float) -> dict:
         "brush": pg.mkBrush(colour) if row.fit_current else pg.mkBrush(None),
         "data": {"index": index, "value": row.own_nm_v, "side": side,
                  "current": row.fit_current, "source": row.source,
-                 "name": Path(row.path).name},
+                 "in_use": row.in_use_nm_v, "name": Path(row.path).name},
     }
 
 
@@ -100,10 +124,12 @@ class InvolsPlot(pg.PlotWidget):
         self._view_box = _BoxViewBox()
         super().__init__(parent, viewBox=self._view_box,
                          axisItems={"bottom": _DateAxis()})
-        set_si_label(self, "left", variables.label(TRANSFORM_KEY),
+        set_si_label(self, "left", variables.OWN_INVOLS_LABEL,
                      quantities.unit_of(TRANSFORM_KEY), si=False)
         self._view_box.disableAutoRange()
-        self._scatter = None
+        self._scatters = []
+        self._outlier_scatter = None
+        self._outliers = []
         self._mean_line = None
         self._box = None
         self._box_item = pg.QtWidgets.QGraphicsRectItem()
@@ -111,40 +137,74 @@ class InvolsPlot(pg.PlotWidget):
         self._box_item.setVisible(False)
         self._view_box.addItem(self._box_item, ignoreBounds=True)
         self._view_box.box_dragged.connect(self._on_box_dragged)
+        self._view_box.click_at.connect(self._on_slow_click)
+        self._view_box.sigYRangeChanged.connect(self._place_outliers)
         self._apply_view([], [])
 
     def set_traces(self, rows: Sequence[TraceRow]) -> None:
-        if self._scatter is not None:
-            self._view_box.removeItem(self._scatter)
-            self._scatter = None
+        for scatter in self._scatters:
+            self._view_box.removeItem(scatter)
+        self._scatters, self._outlier_scatter, self._outliers = [], None, []
         self._view_box.setToolTip("")
         drawn = _drawn(rows)
         lo, hi, side = _y_view([r.own_nm_v for _, r in drawn])
         self._apply_view([r.time_s for _, r in drawn], [lo, hi])
-        if not drawn:
-            return
-        spots = [_spot(i, r, s, lo, hi) for (i, r), s in zip(drawn, side)]
-        self._scatter = pg.ScatterPlotItem(spots=spots, tip=_tip, hoverable=True)
-        self._scatter.sigClicked.connect(self._on_clicked)
-        self._view_box.addItem(self._scatter)
+        ordinary = [_spot(i, r, 0, lo, hi) for (i, r), s in zip(drawn, side) if not s]
+        self._outliers = [(i, r) for (i, r), s in zip(drawn, side) if s]
+        if ordinary:
+            self._add_scatter(ordinary, ignore_bounds=False)
+        if self._outliers:
+            self._outlier_scatter = self._add_scatter(self._outlier_spots(), True)
+
+    def _add_scatter(self, spots: list[dict], ignore_bounds: bool):
+        scatter = pg.ScatterPlotItem(spots=spots, tip=_tip, hoverable=True)
+        scatter.sigClicked.connect(self._on_clicked)
+        self._view_box.addItem(scatter, ignoreBounds=ignore_bounds)
+        self._scatters.append(scatter)
+        return scatter
+
+    def _outlier_spots(self) -> list[dict]:
+        lo, hi = self._view_box.viewRange()[1]
+        spots = []
+        for index, row in self._outliers:
+            side = 1 if row.own_nm_v > hi else -1 if row.own_nm_v < lo else 0
+            spots.append(_spot(index, row, side, lo, hi))
+        return spots
+
+    def _place_outliers(self, *_) -> None:
+        if self._outlier_scatter is not None:
+            self._outlier_scatter.setData(spots=self._outlier_spots())
 
     def _apply_view(self, times: list[float], y_limits: list[float]) -> None:
         x0, x1 = _x_view(times)
         y0, y1 = (y_limits[0], y_limits[1]) if y_limits else _DEFAULT_Y
         self._view_box.setRange(xRange=(x0, x1), yRange=(y0, y1), padding=0)
 
+    def _point_at(self, scene_pos) -> int | None:
+        if not self._view_box.sceneBoundingRect().contains(scene_pos):
+            return None
+        for scatter in self._scatters:
+            points = scatter.pointsAt(scatter.mapFromScene(scene_pos))
+            if len(points):
+                return int(points[0].data()["index"])
+        return None
+
     def _on_clicked(self, _scatter, points, ev) -> None:
         if not ev.double():
             self.point_selected.emit(int(points[0].data()["index"]))
 
+    def _on_slow_click(self, scene_pos) -> None:
+        index = self._point_at(scene_pos)
+        if index is not None:
+            self.point_selected.emit(index)
+
     def mouseDoubleClickEvent(self, ev) -> None:
         super().mouseDoubleClickEvent(ev)
-        if self._scatter is None or ev.button() != Qt.MouseButton.LeftButton:
+        if ev.button() != Qt.MouseButton.LeftButton:
             return
-        local = self._scatter.mapFromScene(self.mapToScene(ev.position().toPoint()))
-        points = self._scatter.pointsAt(local)
-        if len(points):
-            self.point_opened.emit(int(points[0].data()["index"]))
+        index = self._point_at(self.mapToScene(ev.position().toPoint()))
+        if index is not None:
+            self.point_opened.emit(index)
 
     def _on_box_dragged(self, t0, t1, y0, y1, finished) -> None:
         if finished:
@@ -177,4 +237,4 @@ class InvolsPlot(pg.PlotWidget):
             return
         pen = pg.mkPen(style.INK_STRONG, width=1, style=Qt.PenStyle.DashLine)
         self._mean_line = pg.InfiniteLine(pos=value, angle=0, movable=False, pen=pen)
-        self._view_box.addItem(self._mean_line)
+        self._view_box.addItem(self._mean_line, ignoreBounds=True)

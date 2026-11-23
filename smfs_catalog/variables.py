@@ -390,6 +390,9 @@ EXCLUDED_VARIABLE_KEYS: frozenset[str] = frozenset().union(
 NOT_A_VARIABLE = EXCLUDED_VARIABLE_KEYS
 
 
+OWN_INVOLS_LABEL = "Own-fit InvOLS"   # a name only: not a registry variable
+
+
 def _label(key: str) -> str:
     return (_SEG_LABELS.get(key) or _ANALYSIS_LABELS.get(key)
             or _FILE_COLUMNS.get(key) or key)
