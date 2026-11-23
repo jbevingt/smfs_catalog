@@ -282,3 +282,23 @@ def test_box_cut_count():
 
 def test_box_cut_count_zero_when_nothing_cut():
     assert box_cut_count(T, Y, (0, 3, 5, 45)) == 0
+
+
+def test_box_cut_count_ignores_points_outside_the_time_span():
+    # times 1 and 2 are in the span: 20 is below the limit, 30 is inside.
+    # times 0 and 3 are out of span, so they are not counted whatever their value.
+    assert box_cut_count(T, Y, (1, 2, 25, 35)) == 1
+
+
+def test_box_cut_count_does_not_count_a_missing_value_none():
+    assert box_cut_count([0, 1, 2], [20.0, None, 20.0], (0, 2, 15, 35)) == 0
+
+
+def test_box_cut_count_does_not_count_a_missing_value_nan():
+    assert box_cut_count([0, 1, 2], [20.0, float("nan"), 20.0], (0, 2, 15, 35)) == 0
+
+
+def test_display_range_pads_five_percent_of_the_span():
+    r = display_range([10.0, 20.0])
+    assert r.lo == pytest.approx(9.5, rel=1e-12)
+    assert r.hi == pytest.approx(20.5, rel=1e-12)
