@@ -1075,7 +1075,11 @@ class DecompositionWindow(QWidget):
         own_slope = None
         if result is not None and not np.isnan(result.invols_slope):
             own_slope = float(result.invols_slope)
-        self._show_invols_label(curve, own_slope)
+        own_rms = None
+        if own_slope is not None and stage1 is not None \
+                and not np.isnan(stage1.invols_rms):
+            own_rms = float(stage1.invols_rms)
+        self._show_invols_label(curve, own_slope, own_rms)
 
         # ── Baseline fit — retract, anchor region ──────────────────────────────
         # Same pattern as invOLS just above: offset/flatness come from `result`
@@ -1136,10 +1140,12 @@ class DecompositionWindow(QWidget):
         self._clear()
 
     def _show_invols_label(self, curve: "ForceCurve",
-                           own_slope: "float | None") -> None:
+                           own_slope: "float | None",
+                           own_rms: "float | None") -> None:
         try:
             text = _invols_store.curve_label(
-                curve.path, own_slope, curve.inv_ols_nm_v, self._db_path)
+                curve.path, own_slope, curve.inv_ols_nm_v, self._db_path,
+                own_rms)
         except Exception:
             text = ""
         self._invols_label.setText(text)

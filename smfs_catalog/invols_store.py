@@ -204,16 +204,31 @@ def _nm_v(value: float | None) -> str:
     return quantities.format_value(TRANSFORM_KEY, value, with_unit=True)
 
 
+def _finite(value: float | None) -> bool:
+    return value is not None and math.isfinite(value)
+
+
+def _rms_text(own_slope: float | None, own_rms: float | None,
+              stored: Mapping) -> str | None:
+    if own_slope is None:
+        return None
+    rms = own_rms
+    if rms is None and stored.get("invols_slope", (None,))[0] == own_slope:
+        rms = stored.get("invols_rms", (None,))[0]
+    if not _finite(rms):
+        return None
+    return "RMS=" + quantities.format_value("invols_rms", rms, with_unit=True)
+
+
 def curve_label(path: str, own_slope: float | None,
-                instrument_nm_v: float | None, db_path: str) -> str:
+                instrument_nm_v: float | None, db_path: str,
+                own_rms: float | None = None) -> str:
     conn = db.get_connection(db_path)
     try:
         fid = db.get_file_id(path, conn=conn)
         ids = [] if fid is None else [fid]
         group = _ensemble_groups(conn, ids).get(fid)
         stored = _results(conn, ids).get(fid, {})
-        rms = stored.get("invols_rms", (None,))[0]
-        stored_slope = stored.get("invols_slope", (None,))[0]
     finally:
         conn.close()
     own = own_transform_nm_v(instrument_nm_v, own_slope)
@@ -222,11 +237,11 @@ def curve_label(path: str, own_slope: float | None,
     else:
         parts = [f"InvOLS in use {_nm_v(group.value)} (ensemble of {group.n} traces)",
                  f"own fit {_nm_v(own)}"]
-    if own_slope is not None and math.isfinite(own_slope):
+    if _finite(own_slope):
         parts.append("slope=" + quantities.format_value("invols_slope", own_slope))
-    if (own_slope is not None and stored_slope == own_slope
-            and rms is not None and math.isfinite(rms)):
-        parts.append("RMS=" + quantities.format_value("invols_rms", rms, with_unit=True))
+    rms_text = _rms_text(own_slope, own_rms, stored)
+    if rms_text is not None:
+        parts.append(rms_text)
     return " · ".join(parts)
 
 

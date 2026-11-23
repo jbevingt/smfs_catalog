@@ -88,6 +88,8 @@ class InvolsFitControls(QWidget):
     def set_values(self, offset_pts: int, window_pts: int) -> None:
         for box, value in ((self.offset_spinbox, offset_pts),
                            (self.window_spinbox, window_pts)):
+            if box.value() == int(value):
+                continue
             box.blockSignals(True)
             box.setValue(int(value))
             box.blockSignals(False)
