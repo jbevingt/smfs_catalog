@@ -458,6 +458,9 @@ ENSEMBLE_LABEL = ("InvOLS in use 210.00 nm/V (ensemble of 3 traces) · "
 def _label_catalog(tmp_path):
     db_path, ids = _standard(tmp_path)
     synth.add_result(db_path, ids[0], "invols_rms", 0.1948)
+    # the stored fit is the one the label's slope comes from
+    synth.put_result(db_path, ids[0], "invols_slope", -0.9852,
+                     synth.current_fit_key(db_path))
     return db_path, ids
 
 
@@ -669,3 +672,25 @@ def _execute(db_path, sql, params=()):
             con.execute(sql, params)
     finally:
         con.close()
+
+
+# The RMS belongs to the stored fit: shown only for the slope that fit made.
+
+def test_curve_label_shows_no_rms_for_a_slope_that_is_not_the_stored_fit(
+        tmp_path):
+    db_path, _ = _label_catalog(tmp_path)        # stored slope -0.9852
+    label = store.curve_label(synth.path_of(1), -0.9000, INSTRUMENT, db_path)
+    assert "slope=-0.9000" in label
+    assert "RMS=" not in label
+
+
+def test_curve_label_shows_the_rms_for_the_stored_slope(tmp_path):
+    db_path, _ = _label_catalog(tmp_path)
+    label = store.curve_label(synth.path_of(1), -0.9852, INSTRUMENT, db_path)
+    assert "RMS=0.1948 nm" in label
+
+
+def test_curve_label_shows_no_rms_when_there_is_no_own_slope(tmp_path):
+    db_path, _ = _label_catalog(tmp_path)
+    label = store.curve_label(synth.path_of(1), None, INSTRUMENT, db_path)
+    assert "RMS=" not in label

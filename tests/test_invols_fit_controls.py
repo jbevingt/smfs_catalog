@@ -317,6 +317,7 @@ def test_label_of_an_ensemble_trace_with_no_own_fit(catalog, open_windows):
     assert "InvOLS in use 210.00 nm/V (ensemble of 3 traces)" in text
     assert "own fit —" in text
     assert "slope=" not in text
+    assert "RMS=" not in text
 
 
 def test_ensemble_label_follows_an_edit_to_a_window_with_no_own_fit(
@@ -394,3 +395,153 @@ def test_spin_boxes_carry_the_original_hover_text(catalog, open_windows):
     controls = _controls(catalog[0], open_windows)
     assert controls.offset_spinbox.toolTip() == _OFFSET_TIP
     assert controls.window_spinbox.toolTip() == _WINDOW_TIP
+
+
+# ── a second control's edit must not be undone by the curve view ─────────────
+# Another InvolsFitControls on the same catalog sets the offset 50 -> 70 while
+# the curve view's own box still holds 50.
+
+OTHER_OFFSET = 70
+_WINDOW_KEYS = ("spectral_cutoff_hz", "turnaround_trim_pts", "var_window_ms",
+                "detection_threshold_appr", "detection_threshold_retr",
+                "baseline_anchor_nm", "invols_offset_pts", "invols_window_pts")
+
+
+@pytest.fixture
+def outside_edit(catalog, open_windows):
+    """(db_path, window, key of the fit under offset 50, key under offset 70):
+    the window is open, then a second shared widget sets the offset to 70."""
+    db_path, _ids = catalog
+    win = _window(db_path, open_windows)
+    key_before = synth.current_fit_key(db_path)
+    _controls(db_path, open_windows).offset_spinbox.setValue(OTHER_OFFSET)
+    key_after = synth.current_fit_key(db_path)
+    assert key_before != key_after            # the test can tell them apart
+    assert win._invols_offset_spinbox.value() == 50
+    return db_path, win, key_before, key_after
+
+
+def _owner_profile(db_path):
+    return db.get_experimentalist_profile(OWNER, db_path)
+
+
+def _slope_key(db_path):
+    rows = synth.fetch(db_path, "SELECT params_json FROM analysis_results "
+                       "WHERE file_id = 1 AND analysis_type = 'invols_slope'")
+    return rows[0][0] if rows else None
+
+
+def test_editing_the_curve_views_window_box_keeps_the_others_offset(
+        outside_edit):
+    db_path, win, _k50, _k70 = outside_edit
+    win._invols_window_spinbox.setValue(120)
+    assert _stored(db_path) == (OTHER_OFFSET, 120)
+    profile = _owner_profile(db_path)
+    assert profile["invols_offset_pts"] == float(OTHER_OFFSET)
+    assert profile["invols_window_pts"] == 120.0
+
+
+def test_editing_another_curve_view_control_keeps_the_others_offset(
+        outside_edit):
+    db_path, win, _k50, _k70 = outside_edit
+    win._trim_spinbox.setValue(7)
+    assert _stored(db_path)[0] == OTHER_OFFSET
+    assert _owner_profile(db_path)["invols_offset_pts"] == float(OTHER_OFFSET)
+    win._cutoff_slider.setValue(win._cutoff_slider.value() - 1)
+    assert _stored(db_path)[0] == OTHER_OFFSET
+    assert _owner_profile(db_path)["invols_offset_pts"] == float(OTHER_OFFSET)
+
+
+def test_a_plain_redraw_fits_under_the_others_offset(outside_edit):
+    db_path, win, key_50, key_70 = outside_edit
+    win.update_curve(_curve())
+    assert _slope_key(db_path) == key_70
+    assert _slope_key(db_path) != key_50
+    assert win._invols_offset_spinbox.value() == OTHER_OFFSET
+    assert win._invols_offset_pts == OTHER_OFFSET
+    assert _stored(db_path)[0] == OTHER_OFFSET
+
+
+def test_refresh_invols_fit_adopts_the_outside_edit_and_redraws_once(
+        outside_edit):
+    db_path, win, _k50, key_70 = outside_edit
+    win.update_curve(_curve())          # shown, under whatever is in force
+    emitted = _counter(win.analysis_params_changed)
+    params_before, profile_before = db.load_analysis_params(db_path), _owner_profile(db_path)
+    win.refresh_invols_fit()
+    assert win._invols_offset_spinbox.value() == OTHER_OFFSET
+    assert win._invols_offset_pts == OTHER_OFFSET
+    assert win._invols_window_pts == 200
+    assert len(emitted) == 1
+    assert _slope_key(db_path) == key_70                 # the curve was redrawn
+    assert db.load_analysis_params(db_path) == params_before
+    assert _owner_profile(db_path) == profile_before
+
+
+def test_refresh_invols_fit_with_no_curve_showing_does_not_raise(
+        outside_edit):
+    db_path, win, _k50, _k70 = outside_edit
+    win.refresh_invols_fit()
+    assert win._invols_offset_spinbox.value() == OTHER_OFFSET
+    assert win._invols_offset_pts == OTHER_OFFSET
+    assert _stored(db_path) == (OTHER_OFFSET, 200)
+
+
+def test_a_brand_new_owner_gets_a_complete_profile_with_the_invols_keys(
+        catalog, open_windows):
+    db_path, _ids = catalog
+    win = _window(db_path, open_windows)
+    before = set(_owner_profile(db_path) or {})
+    win._sync_profile_owner(synth.path_of(1))
+    profile = _owner_profile(db_path)
+    params = db.load_analysis_params(db_path)
+    assert before <= set(profile)
+    for key in _WINDOW_KEYS:
+        assert key in profile, key
+    assert profile["invols_offset_pts"] == float(params.invols_offset_pts) == 50.0
+    assert profile["invols_window_pts"] == float(params.invols_window_pts) == 200.0
+
+
+# ── a failed fit must not leave an old RMS on the label ──────────────────────
+
+def test_own_fit_label_drops_the_rms_when_the_fit_no_longer_exists(
+        catalog, open_windows):
+    db_path, _ids = catalog
+    win = _window(db_path, open_windows)
+    assert "RMS=" in _shown(win, _curve())              # a fit, and its RMS
+    win._invols_window_spinbox.setValue(WINDOW_TOO_LONG)
+    text = win._invols_label.text()
+    assert "RMS=" not in text
+    assert "(own fit)" in text
+
+
+def test_ensemble_label_drops_the_rms_when_the_fit_no_longer_exists(
+        catalog, open_windows):
+    db_path, ids = catalog
+    synth.add_group(db_path, ids, 210.0)
+    win = _window(db_path, open_windows)
+    assert "RMS=" in _shown(win, _curve())
+    win._invols_window_spinbox.setValue(WINDOW_TOO_LONG)
+    text = win._invols_label.text()
+    assert "own fit —" in text
+    assert "RMS=" not in text
+
+
+# ── smaller items ────────────────────────────────────────────────────────────
+
+def test_label_tooltip_holds_the_full_text(catalog, open_windows):
+    win = _window(catalog[0], open_windows)
+    text = _shown(win, _curve())
+    assert text
+    assert win._invols_label.toolTip() == text
+
+
+def test_a_failing_label_does_not_crash_the_redraw(
+        catalog, open_windows, monkeypatch):
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("label failed")
+    monkeypatch.setattr(invols_store, "curve_label", boom)
+    win = _window(catalog[0], open_windows)
+    win.update_curve(_curve())                      # must return
+    xs, _ys = win._low_appr.getData()
+    assert xs is not None and len(xs) > 0
