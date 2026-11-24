@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Sequence
 
 import pyqtgraph as pg
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import QPointF, Qt, pyqtSignal
 
 from . import quantities, style, variables
 from .invols_stats import TRANSFORM_KEY, display_range
@@ -36,29 +36,60 @@ _CLICK_PX = 4.0
 _SOURCE_TEXT = {"own": "own fit", "ensemble": "ensemble value"}
 
 
+class _OutlierScatter(pg.ScatterPlotItem):
+    """Counts for the x auto-range (an outlier's time stays in view) but not the
+    y.  Its own bounding rectangle, which hit-testing uses, keeps both."""
+
+    _full_bounds = False
+
+    def dataBounds(self, ax, frac=1.0, orthoRange=None):
+        if ax == 1 and not self._full_bounds:
+            return (None, None)
+        return super().dataBounds(ax, frac, orthoRange)
+
+    def boundingRect(self):
+        self._full_bounds = True
+        try:
+            return super().boundingRect()
+        finally:
+            self._full_bounds = False
+
+
 class _BoxViewBox(pg.ViewBox):
     box_dragged = pyqtSignal(float, float, float, float, bool)
+    box_cancelled = pyqtSignal()
     click_at = pyqtSignal(object)
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._moved_far = False
 
+    def _clamped(self, pos):
+        r = self.rect()
+        return QPointF(min(max(pos.x(), r.left()), r.right()),
+                       min(max(pos.y(), r.top()), r.bottom()))
+
     def mouseDragEvent(self, ev, axis=None):
         if axis is not None or ev.button() != Qt.MouseButton.LeftButton:
             super().mouseDragEvent(ev, axis)
             return
         ev.accept()
-        start, now = ev.buttonDownPos(), ev.pos()
+        start, now = ev.buttonDownPos(), self._clamped(ev.pos())
+        far = pg.Point(now - start).length() >= _CLICK_PX
         if ev.isStart():
             self._moved_far = False
-        self._moved_far = self._moved_far or pg.Point(now - start).length() >= _CLICK_PX
+        self._moved_far = self._moved_far or far
         if not self._moved_far:
             if ev.isFinish():
                 self.click_at.emit(ev.buttonDownScenePos())
-            return
+        elif ev.isFinish() and not far:
+            self.box_cancelled.emit()
+        else:
+            self._emit_box(start, now, ev.isFinish())
+
+    def _emit_box(self, start, now, finished: bool) -> None:
         a, b = self.mapToView(start), self.mapToView(now)
-        self.box_dragged.emit(a.x(), b.x(), a.y(), b.y(), ev.isFinish())
+        self.box_dragged.emit(a.x(), b.x(), a.y(), b.y(), finished)
 
 
 def _drawn(rows: Sequence[TraceRow]) -> list[tuple[int, TraceRow]]:
@@ -138,6 +169,7 @@ class InvolsPlot(pg.PlotWidget):
         self._view_box.addItem(self._box_item, ignoreBounds=True)
         self._view_box.box_dragged.connect(self._on_box_dragged)
         self._view_box.click_at.connect(self._on_slow_click)
+        self._view_box.box_cancelled.connect(self._restore_box)
         self._view_box.sigYRangeChanged.connect(self._place_outliers)
         self._apply_view([], [])
 
@@ -149,17 +181,21 @@ class InvolsPlot(pg.PlotWidget):
         drawn = _drawn(rows)
         lo, hi, side = _y_view([r.own_nm_v for _, r in drawn])
         self._apply_view([r.time_s for _, r in drawn], [lo, hi])
+        self._draw(drawn, side, lo, hi)
+
+    def _draw(self, drawn, side, lo: float, hi: float) -> None:
         ordinary = [_spot(i, r, 0, lo, hi) for (i, r), s in zip(drawn, side) if not s]
         self._outliers = [(i, r) for (i, r), s in zip(drawn, side) if s]
         if ordinary:
-            self._add_scatter(ordinary, ignore_bounds=False)
+            self._add_scatter(ordinary, False)
         if self._outliers:
             self._outlier_scatter = self._add_scatter(self._outlier_spots(), True)
 
-    def _add_scatter(self, spots: list[dict], ignore_bounds: bool):
-        scatter = pg.ScatterPlotItem(spots=spots, tip=_tip, hoverable=True)
+    def _add_scatter(self, spots: list[dict], outlier: bool):
+        cls = _OutlierScatter if outlier else pg.ScatterPlotItem
+        scatter = cls(spots=spots, tip=_tip, hoverable=True)
         scatter.sigClicked.connect(self._on_clicked)
-        self._view_box.addItem(scatter, ignoreBounds=ignore_bounds)
+        self._view_box.addItem(scatter)
         self._scatters.append(scatter)
         return scatter
 
@@ -183,8 +219,10 @@ class InvolsPlot(pg.PlotWidget):
     def _point_at(self, scene_pos) -> int | None:
         if not self._view_box.sceneBoundingRect().contains(scene_pos):
             return None
-        for scatter in self._scatters:
-            points = scatter.pointsAt(scatter.mapFromScene(scene_pos))
+        for item in self.scene().items(scene_pos):
+            if item not in self._scatters:
+                continue
+            points = item.pointsAt(item.mapFromScene(scene_pos))
             if len(points):
                 return int(points[0].data()["index"])
         return None
@@ -211,6 +249,12 @@ class InvolsPlot(pg.PlotWidget):
             self.commit_box(t0, t1, y0, y1)
         else:
             self._show_box(t0, t1, y0, y1)
+
+    def _restore_box(self) -> None:
+        if self._box is None:
+            self._box_item.setVisible(False)
+        else:
+            self._show_box(*self._box)
 
     def _show_box(self, t0, t1, y0, y1) -> None:
         self._box_item.setRect(min(t0, t1), min(y0, y1), abs(t1 - t0), abs(y1 - y0))
