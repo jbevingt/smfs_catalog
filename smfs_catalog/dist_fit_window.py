@@ -645,6 +645,11 @@ class _PlotPane(QWidget):
 
 # ── Model pane ────────────────────────────────────────────────────────────────
 
+def _set_save_status(label, text: str, colour: str = style.TEXT_GOOD) -> None:
+    label.setStyleSheet(style.qss_text(colour, size_px=10))
+    label.setText(text)
+
+
 class _ModelPane(QWidget):
     """
     Model builder, fit results, model comparison, and DB save.
@@ -851,7 +856,7 @@ class _ModelPane(QWidget):
         self._last_fit = {}
         self._save_btn.setEnabled(False)
         self._export_btn.setEnabled(False)
-        self._save_status.setText("")
+        _set_save_status(self._save_status, "")
 
     # ── Fitting ───────────────────────────────────────────────────────────────
 
@@ -878,11 +883,13 @@ class _ModelPane(QWidget):
             prog.close()
 
         if boot is None:
-            self._save_status.setText(
+            _set_save_status(
+                self._save_status,
                 "No confidence interval — too few resamples converged."
                 if not prog.cancelled else "Confidence interval cancelled.")
         elif boot.n_failed:
-            self._save_status.setText(
+            _set_save_status(
+                self._save_status,
                 f"{boot.n_failed} of {boot.n_draws} resamples did not converge; "
                 f"interval from the {boot.n_ok} that did.")
         return boot
@@ -1039,7 +1046,7 @@ class _ModelPane(QWidget):
                            starts, user_bounds, at_user_bound, constrained)
         self._update_stats(gof)
         self._record_fit(model_label, len(data), gof, saved=False)
-        self._save_status.setText("")
+        _set_save_status(self._save_status, "")
 
         param_labels = [
             f"{labels[i]}/{comp.param_names[j]}"
@@ -1386,7 +1393,7 @@ class _ModelPane(QWidget):
             if self._fit_history:
                 self._update_comparison_table()
         except Exception as exc:
-            self._save_status.setStyleSheet(style.qss_text(style.TEXT_BAD, size_px=10))
+            _set_save_status(self._save_status, "", style.TEXT_BAD)
             report_handled(self._save_status.setText, "Loading saved fits", exc)
 
     # ── DB save ───────────────────────────────────────────────────────────────
@@ -1552,8 +1559,7 @@ class _ModelPane(QWidget):
                 break
         self._update_comparison_table()
         self._save_btn.setEnabled(False)
-        self._save_status.setStyleSheet(style.qss_text(style.TEXT_GOOD, size_px=10))
-        self._save_status.setText("Saved ✔")
+        _set_save_status(self._save_status, "Saved ✔")
 
 
 # ── Main window ───────────────────────────────────────────────────────────────
