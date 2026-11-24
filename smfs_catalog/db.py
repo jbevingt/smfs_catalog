@@ -16,6 +16,7 @@ from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 from datetime import datetime
+from dataclasses import replace
 from typing import Optional
 
 import numpy as np
@@ -27,6 +28,7 @@ from .analysis_params import (
     ANALYSIS_PARAM_KEYS,
     AnalysisParams,
 )
+from .file_filter import FileFilter
 from .path_pattern import path_matches
 
 APP_NAME = "smfs_catalog"
@@ -1021,12 +1023,6 @@ def get_distinct_values(
     column: str,
     table: str = "files",
     db_path: str = DEFAULT_DB_PATH,
-    *,
-    users: Optional[list] = None,
-    techniques: Optional[list] = None,
-    analytes: Optional[list] = None,
-    solvents: Optional[list] = None,
-    afm_units: Optional[list] = None,
 ) -> list[str]:
     """Return sorted list of distinct non-null values for a given column."""
     _allowed = {
@@ -1038,35 +1034,10 @@ def get_distinct_values(
     if table not in _allowed or column not in _allowed[table]:
         return []
 
-    clauses = [f"{column} IS NOT NULL AND {column} != ''"]
-    params: list = []
-
-    if users:
-        ph = ",".join("?" * len(users))
-        clauses.append(f"experimentalist IN ({ph})")
-        params.extend(users)
-    if techniques:
-        ph = ",".join("?" * len(techniques))
-        clauses.append(f"technique IN ({ph})")
-        params.extend(techniques)
-    if analytes:
-        ph = ",".join("?" * len(analytes))
-        clauses.append(f"analyte IN ({ph})")
-        params.extend(analytes)
-    if solvents:
-        ph = ",".join("?" * len(solvents))
-        clauses.append(f"solvent IN ({ph})")
-        params.extend(solvents)
-    if afm_units:
-        ph = ",".join("?" * len(afm_units))
-        clauses.append(f"afm_unit IN ({ph})")
-        params.extend(afm_units)
-
-    where = " AND ".join(clauses)
+    where = f"{column} IS NOT NULL AND {column} != ''"
     conn = get_connection(db_path)
     rows = conn.execute(
         f"SELECT DISTINCT {column} FROM {table} WHERE {where} ORDER BY {column}",
-        params,
     ).fetchall()
     conn.close()
     return [row[0] for row in rows]
@@ -1091,26 +1062,17 @@ _CANONICAL_IDS_SQL = """
 """
 
 
-def _file_filter_clauses(
-    *,
-    directory=None, directories=None,
-    curve_type=None, curve_types=None, parse_ok=None, quality=None,
-    search=None, users=None, analytes=None, solvents=None, afm_units=None,
-    techniques=None, substrates=None, sample_preps=None,
-    date_from=None, date_to=None, k_min=None, k_max=None,
-    usable=None, unique=None, exclude_facet=None,
-) -> tuple[list[str], list]:
-    """Build the one authoritative set of predicates over ``files f``."""
+def _add_many(clauses: list, params: list, column: str, values) -> None:
+    if values:
+        placeholders = ",".join("?" * len(values))
+        clauses.append(f"{column} IN ({placeholders})")
+        params.extend(values)
+
+
+def _directory_clauses(flt: FileFilter) -> tuple[list[str], list]:
     clauses: list[str] = []
     params: list = []
-
-    def add_many(column: str, values) -> None:
-        if values:
-            placeholders = ",".join("?" * len(values))
-            clauses.append(f"{column} IN ({placeholders})")
-            params.extend(values)
-
-    for d in ([directory] if directory else []) + list(directories or []):
+    for d in ([flt.directory] if flt.directory else []) + list(flt.directories or []):
         # Compared with a trailing separator, so /a/b never captures
         # /a/b2.  substr rather than LIKE: LIKE reads _ and % in the root as
         # wildcards, and a real folder name may contain either.
@@ -1118,82 +1080,106 @@ def _file_filter_clauses(
         under = root + os.sep
         clauses.append("(f.path = ? OR substr(f.path, 1, ?) = ?)")
         params.extend([root, len(under), under])
-    if usable is not None:
+    return clauses, params
+
+
+def _eligibility_clauses(flt: FileFilter) -> tuple[list[str], list]:
+    clauses: list[str] = []
+    if flt.usable is not None:
         clauses.append(
-            "f.unusable_reason IS NULL" if usable
+            "f.unusable_reason IS NULL" if flt.usable
             else "f.unusable_reason IS NOT NULL"
         )
-    if unique is not None:
-        clauses.append(f"f.id {'' if unique else 'NOT '}IN ({_CANONICAL_IDS_SQL})")
-    if curve_type is not None:
+    if flt.unique is not None:
+        clauses.append(
+            f"f.id {'' if flt.unique else 'NOT '}IN ({_CANONICAL_IDS_SQL})")
+    return clauses, []
+
+
+def _column_clauses(flt: FileFilter, exclude_facet) -> tuple[list[str], list]:
+    clauses: list[str] = []
+    params: list = []
+    if flt.curve_type is not None:
         clauses.append("f.curve_type = ?")
-        params.append(curve_type)
+        params.append(flt.curve_type)
     if exclude_facet != "curve_types":
-        add_many("f.curve_type", curve_types)
-    if parse_ok is not None:
+        _add_many(clauses, params, "f.curve_type", flt.curve_types)
+    if flt.parse_ok is not None:
         clauses.append("f.parse_ok = ?")
-        params.append(1 if parse_ok else 0)
-    if quality is not None:
+        params.append(1 if flt.parse_ok else 0)
+    if flt.quality is not None:
         clauses.append("f.quality = ?")
-        params.append(quality)
-    if search:
+        params.append(flt.quality)
+    if flt.search:
         clauses.append("path_matches(f.path, ?)")
-        params.append(search)
-    for facet, column, values in (
-        ("users", "f.experimentalist", users),
-        ("analytes", "f.analyte", analytes),
-        ("solvents", "f.solvent", solvents),
-        ("techniques", "f.technique", techniques),
-        ("substrates", "f.substrate", substrates),
-        ("sample_preps", "f.sample_prep", sample_preps),
-        ("afm_units", "f.afm_unit", afm_units),
+        params.append(flt.search)
+    return clauses, params
+
+
+def _facet_clauses(flt: FileFilter, exclude_facet) -> tuple[list[str], list]:
+    clauses: list[str] = []
+    params: list = []
+    for facet, column in (
+        ("users", "f.experimentalist"),
+        ("analytes", "f.analyte"),
+        ("solvents", "f.solvent"),
+        ("techniques", "f.technique"),
+        ("substrates", "f.substrate"),
+        ("sample_preps", "f.sample_prep"),
+        ("afm_units", "f.afm_unit"),
     ):
         if exclude_facet != facet:
-            add_many(column, values)
-    if date_from:
+            _add_many(clauses, params, column, getattr(flt, facet))
+    return clauses, params
+
+
+def _range_clauses(flt: FileFilter) -> tuple[list[str], list]:
+    clauses: list[str] = []
+    params: list = []
+    if flt.date_from:
         clauses.append("f.measured_date >= ?")
-        params.append(date_from)
-    if date_to:
+        params.append(flt.date_from)
+    if flt.date_to:
         clauses.append("f.measured_date <= ?")
-        params.append(date_to)
-    if k_min is not None:
+        params.append(flt.date_to)
+    if flt.k_min is not None:
         clauses.append("f.spring_constant_pn_nm >= ?")
-        params.append(k_min)
-    if k_max is not None:
+        params.append(flt.k_min)
+    if flt.k_max is not None:
         clauses.append("f.spring_constant_pn_nm <= ?")
-        params.append(k_max)
+        params.append(flt.k_max)
+    return clauses, params
+
+
+def _file_filter_clauses(
+    flt: FileFilter, *, exclude_facet=None,
+) -> tuple[list[str], list]:
+    """Build the one authoritative set of predicates over ``files f``."""
+    clauses: list[str] = []
+    params: list = []
+    for part_clauses, part_params in (
+        _directory_clauses(flt),
+        _eligibility_clauses(flt),
+        _column_clauses(flt, exclude_facet),
+        _facet_clauses(flt, exclude_facet),
+        _range_clauses(flt),
+    ):
+        clauses += part_clauses
+        params += part_params
     return clauses, params
 
 
 def get_facet_options(
     db_path: str = DEFAULT_DB_PATH,
-    *,
-    users:        Optional[list] = None,
-    analytes:     Optional[list] = None,
-    solvents:     Optional[list] = None,
-    techniques:   Optional[list] = None,
-    substrates:   Optional[list] = None,
-    sample_preps: Optional[list] = None,
-    afm_units:    Optional[list] = None,
-    curve_types:  Optional[list] = None,
-    date_from:    Optional[str]  = None,
-    date_to:      Optional[str]  = None,
-    search:       Optional[str]  = None,
+    flt: Optional[FileFilter] = None,
 ) -> dict[str, list[tuple[str, int]]]:
     """Faceted-search options: for each filter dimension, the distinct values that still have data given the OTHER selected dimensions, each..."""
+    flt = replace(flt or FileFilter(), parse_ok=True, usable=True, unique=True)
     out: dict[str, list[tuple[str, int]]] = {}
     conn = get_connection(db_path)
     try:
         for dim, col in _FACET_COLUMNS.items():
-            clauses, params = _file_filter_clauses(
-                users=users, analytes=analytes, solvents=solvents,
-                techniques=techniques, substrates=substrates,
-                sample_preps=sample_preps,
-                afm_units=afm_units, curve_types=curve_types,
-                date_from=date_from, date_to=date_to, search=search,
-                parse_ok=True, usable=True, unique=True,
-                exclude_facet=dim,
-            )
+            clauses, params = _file_filter_clauses(flt, exclude_facet=dim)
             clauses.append(f"{col} IS NOT NULL AND {col} != ''")
             where = " AND ".join(clauses)
             rows = conn.execute(f"""
@@ -1211,37 +1197,10 @@ def get_facet_options(
 
 def list_files(
     db_path: str = DEFAULT_DB_PATH,
-    directory: Optional[str] = None,
-    directories: Optional[list] = None,
-    curve_type: Optional[str] = None,
-    curve_types: Optional[list] = None,
-    parse_ok: Optional[bool] = None,
-    quality: Optional[str] = None,
-    search: Optional[str] = None,
-    users: Optional[list] = None,
-    analytes: Optional[list] = None,
-    solvents: Optional[list] = None,
-    techniques: Optional[list] = None,
-    substrates: Optional[list] = None,
-    sample_preps: Optional[list] = None,
-    afm_units: Optional[list] = None,
-    date_from: Optional[str] = None,
-    date_to: Optional[str] = None,
-    k_min: Optional[float] = None,
-    k_max: Optional[float] = None,
-    usable: Optional[bool] = None,
-    unique: Optional[bool] = None,
+    flt: Optional[FileFilter] = None,
 ) -> list[sqlite3.Row]:
     """Fetch file records with optional filters."""
-    clauses, params = _file_filter_clauses(
-        directory=directory, directories=directories,
-        curve_type=curve_type, curve_types=curve_types, parse_ok=parse_ok,
-        quality=quality, search=search, users=users, analytes=analytes,
-        solvents=solvents, techniques=techniques, substrates=substrates,
-        sample_preps=sample_preps, afm_units=afm_units,
-        date_from=date_from, date_to=date_to, k_min=k_min, k_max=k_max,
-        usable=usable, unique=unique,
-    )
+    clauses, params = _file_filter_clauses(flt or FileFilter())
 
     where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
 
@@ -1310,12 +1269,12 @@ def _classification_report_columns() -> tuple[str, ...]:
 
 def classification_report_rows(
     db_path: str = DEFAULT_DB_PATH,
+    flt: Optional[FileFilter] = None,
     *,
     select: str = "ultimate",
-    **scope_kwargs,
 ) -> tuple[list[str], list[list]]:
-    """Build a classification report: one row per file matching `scope_kwargs` (any list_files() filter — users/analytes/solvents/afm_units/..."""
-    rows = list_files(db_path=db_path, **scope_kwargs)
+    """Build a classification report: one row per file matching `flt` (any list_files() filter — users/analytes/solvents/afm_units/..."""
+    rows = list_files(db_path, flt)
     if not rows:
         return list(_classification_report_columns()), []
 
@@ -1348,24 +1307,12 @@ def classification_report_rows(
 
 def get_distinct_dates(
     db_path: str = DEFAULT_DB_PATH,
-    *,
-    users:        Optional[list] = None,
-    analytes:     Optional[list] = None,
-    solvents:     Optional[list] = None,
-    techniques:   Optional[list] = None,
-    substrates:   Optional[list] = None,
-    sample_preps: Optional[list] = None,
-    afm_units:    Optional[list] = None,
-    curve_types:  Optional[list] = None,
-    search:       Optional[str]  = None,
+    flt: Optional[FileFilter] = None,
 ) -> list[tuple[str, int]]:
-    """Return [(measured_date, n_files), ...] for dates that have at least one parseable file."""
-    clauses, params = _file_filter_clauses(
-        users=users, analytes=analytes, solvents=solvents,
-        techniques=techniques, substrates=substrates, sample_preps=sample_preps,
-        afm_units=afm_units, curve_types=curve_types, search=search,
-        parse_ok=True,
-    )
+    """Return [(measured_date, n_files), ...] for dates that have at least one parseable file; only the facet and search fields of `flt` narrow it."""
+    flt = replace(flt or FileFilter(), parse_ok=True, usable=None, unique=None,
+                  date_from=None, date_to=None)
+    clauses, params = _file_filter_clauses(flt)
     clauses += ["f.measured_date IS NOT NULL", "f.measured_date != ''"]
     where = " AND ".join(clauses)
 

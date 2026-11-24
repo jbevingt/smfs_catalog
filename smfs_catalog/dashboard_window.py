@@ -909,10 +909,10 @@ class DashboardWindow(QMainWindow):
 
     def _on_export_classification_report(self) -> None:
         """Report on whatever the CURRENT scope filters express — the whole DB if none are set, the same subset "Database — files in scope" counts..."""
-        kw = scope_to_query(self._scope)
+        flt = scope_to_query(self._scope)
         select = read_segment_select(self._db_path)
         header, rows = _db.classification_report_rows(
-            self._db_path, select=select, **kw)
+            self._db_path, flt, select=select)
         if not rows:
             QMessageBox.information(
                 self, "Classification report",
@@ -926,7 +926,7 @@ class DashboardWindow(QMainWindow):
             g.contributing_files(r[0] for r in rows)
             g.note(
                 window="dashboard",
-                scope=kw or "whole database (no scope filters set)",
+                scope=flt.set_fields() or "whole database (no scope filters set)",
                 segment_select=select,
                 columns=header,
                 n_rows=len(rows),
@@ -939,8 +939,7 @@ class DashboardWindow(QMainWindow):
 
     def _on_define_metadata(self) -> None:
         """Bulk-write sample metadata onto every file the CURRENT scope expresses — same cohort as "Database — files in scope" and the..."""
-        kw = scope_to_query(self._scope)
-        rows = _db.list_files(db_path=self._db_path, **kw)
+        rows = _db.list_files(self._db_path, scope_to_query(self._scope))
         paths = [row["path"] for row in rows]
         if not paths:
             QMessageBox.information(
@@ -953,8 +952,7 @@ class DashboardWindow(QMainWindow):
 
     def _on_remove_files(self) -> None:
         """The undo for Add Data and for an analysis run, over the CURRENT scope — same cohort as "Database — files in scope", "Define metadata..."..."""
-        kw = scope_to_query(self._scope)
-        rows = _db.list_files(db_path=self._db_path, **kw)
+        rows = _db.list_files(self._db_path, scope_to_query(self._scope))
         paths = [row["path"] for row in rows]
         if not paths:
             QMessageBox.information(
@@ -971,7 +969,7 @@ class DashboardWindow(QMainWindow):
         from .add_data_dialog import _ScanProgress
         from . import scanner as _scanner
 
-        n_all = len(_db.list_files(db_path=self._db_path))
+        n_all = len(_db.list_files(self._db_path))
         if not n_all:
             QMessageBox.information(self, "Re-check catalogued files",
                                     "The catalog is empty.")
@@ -1152,20 +1150,7 @@ class DashboardWindow(QMainWindow):
         """Cascading facets."""
         scope = self._scope
         try:
-            facets = _db.get_facet_options(
-                self._db_path,
-                users=scope.get("users") or None,
-                analytes=scope.get("analytes") or None,
-                solvents=scope.get("solvents") or None,
-                techniques=scope.get("techniques") or None,
-                substrates=scope.get("substrates") or None,
-                sample_preps=scope.get("sample_preps") or None,
-                afm_units=scope.get("afm_units") or None,
-                curve_types=scope.get("curve_types") or None,
-                date_from=scope.get("date_from"),
-                date_to=scope.get("date_to"),
-                search=scope.get("search"),
-            )
+            facets = _db.get_facet_options(self._db_path, scope_to_query(scope))
         except Exception as exc:
             def show(text):
                 self._facets_error = text
@@ -1253,9 +1238,8 @@ class DashboardWindow(QMainWindow):
 
     def _refresh_db_and_counts(self) -> None:
         self._refresh_facets()
-        kw = scope_to_query(self._scope)
         try:
-            rows = _db.list_files(db_path=self._db_path, **kw)
+            rows = _db.list_files(self._db_path, scope_to_query(self._scope))
         except Exception as exc:
             self._db_count_lbl.setText(f"(query failed: {exc!r})")
             return
