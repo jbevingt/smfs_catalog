@@ -186,7 +186,9 @@ def test_corrupt_profile_is_logged_and_migration_still_completes(
     _mig.reconcile(db_path)
 
     assert _marker(db_path) is not None
-    assert logged, "the corrupt profile must be reported via crashlog.log_handled"
+    contexts = [ctx for ctx, _ in logged]
+    assert "Strip legacy criteria ticks" in contexts
+    assert _raw_profile(db_path, "bob") == "{bad"
     assert _bounds(db_path, "alice", "gating") == (1.0, 9.0)
     assert _bounds(db_path, "alice", "parked") == (None, None)
     assert "criteria_use:gating" not in json.loads(_raw_profile(db_path, "alice"))
