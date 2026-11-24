@@ -11,10 +11,8 @@ from __future__ import annotations
 
 import html
 import os
-import sqlite3
 import time
 from collections import deque
-from pathlib import Path
 from typing import Optional
 
 from PyQt6.QtCore import (
@@ -43,7 +41,7 @@ from .widgets import CollapsibleSection, FlowLayout, LabeledControl
 from .analysis_worker import AnalysisWorker
 from .navigator_bar import NavigatorBar
 from .roi_pipeline import (
-    read_segment_select, write_segment_select, segment_summary_bulk,
+    read_segment_select, write_segment_select,
 )
 from .qt_utils import fit_on_screen, signals_blocked
 

@@ -57,7 +57,6 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QComboBox,
     QDoubleSpinBox,
-    QHBoxLayout,
     QLabel,
     QPushButton,
     QSizePolicy,

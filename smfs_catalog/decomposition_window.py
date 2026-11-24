@@ -13,7 +13,6 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QSpinBox,
-    QHBoxLayout,
     QLabel,
     QSizePolicy,
     QSlider,
@@ -23,12 +22,8 @@ from PyQt6.QtWidgets import (
 
 from .curve_loader import ForceCurve, load_force_curve
 from . import db as _db
-from . import quantities as _quant
-# Top-level, unlike this module's other signal_processing uses: the verdict is a
-# pure comparison with no Qt or db dependency, and it is needed while building
-# the UI, before any curve has been loaded.
-from . import signal_processing as _sp
 from .bandwidth_warning import filter_bandwidth_warning
+from . import quantities as _quant
 from .quantities import format_value as _q   # ONE formatter: unit and
 # meaningful digits come from quantities.py, so the same measurement
 # cannot print as 166, 166.2 and 166.20 in three different windows.
