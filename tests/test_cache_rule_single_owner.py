@@ -10,12 +10,12 @@
 "When can a CacheContext be used?" has one owner: curve_analysis.py, next to
 CacheContext.
 
-Today the rule (db_path, code_ver and file_id are all set) is written twice,
-as curve_analysis._can_cache and roi_pipeline._can_read_cache, and the cache
-get/put helpers are written twice as well (curve_analysis._cache_get /
-_cache_put_multi, roi_pipeline._cached_scalar / _store_scalars).  A change to
-the rule would have to be made in both places or the two modules would
-disagree about what gets cached.
+The rule (db_path, code_ver and file_id are all set) is written once, as
+curve_analysis.can_use_cache, and the cache reads and writes built on it are
+shared too: curve_analysis.cache_get and cache_put_multi.  roi_pipeline.py uses
+them and holds no copy of the rule and no direct scalar-cache db calls, so a
+change to the rule is made in one place and the two modules cannot disagree
+about what gets cached.
 
 Checked on the source (AST), so it does not depend on the shared predicate's
 name: it may be a CacheContext method or property, or a module function.
