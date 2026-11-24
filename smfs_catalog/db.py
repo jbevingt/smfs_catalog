@@ -699,15 +699,11 @@ def set_file_descriptors_bulk(
     sets = ", ".join(f"{k} = ?" for k in rec)
     value_params = list(rec.values())
 
-    def _chunks(seq, size=800):
-        for i in range(0, len(seq), size):
-            yield seq[i:i + size]
-
     n = 0
     conn = get_connection(db_path)
     try:
         with conn:
-            for chunk in _chunks(resolved):
+            for chunk in _sql_chunks(resolved):
                 ph = ",".join("?" * len(chunk))
                 cur = conn.execute(
                     f"UPDATE files SET {sets} WHERE path IN ({ph})",
@@ -1567,14 +1563,10 @@ def get_derived_results_bulk_latest(
     paths_resolved = [normalize_path(p) for p in paths]
     type_ph = ",".join("?" * len(analysis_types))
 
-    def _chunks(seq, size=800):
-        for i in range(0, len(seq), size):
-            yield seq[i:i + size]
-
     conn = get_connection(db_path)
     try:
         path_by_fid: dict[int, str] = {}
-        for chunk in _chunks(paths_resolved):
+        for chunk in _sql_chunks(paths_resolved):
             ph = ",".join("?" * len(chunk))
             for r in conn.execute(
                 f"SELECT id, path FROM files WHERE path IN ({ph})", chunk
@@ -1585,7 +1577,7 @@ def get_derived_results_bulk_latest(
 
         rows = []
         fids = list(path_by_fid.keys())
-        for chunk in _chunks(fids):
+        for chunk in _sql_chunks(fids):
             fid_ph = ",".join("?" * len(chunk))
             rows += conn.execute(f"""
                 SELECT ar.file_id, ar.analysis_type, ar.value, ar.params_json
@@ -2367,8 +2359,7 @@ def get_segment_overrides_bulk(
     if not file_ids:
         return out
     with _borrowed(conn, db_path) as c:
-        for i in range(0, len(file_ids), 800):
-            chunk = file_ids[i:i + 800]
+        for chunk in _sql_chunks(file_ids):
             ph = ",".join("?" * len(chunk))
             for r in c.execute(
                 f"SELECT id, primary_segment_idx, secondary_segment_idx, "
@@ -2827,8 +2818,7 @@ def import_queue_from_paths(paths: "list[str]", db_path: str = DEFAULT_DB_PATH) 
     try:
         resolved = [normalize_path(p) for p in paths]
         found: list[int] = []
-        for i in range(0, len(resolved), 800):
-            chunk = resolved[i:i + 800]
+        for chunk in _sql_chunks(resolved):
             ph = ",".join("?" * len(chunk))
             found.extend(
                 r["id"] for r in conn.execute(
