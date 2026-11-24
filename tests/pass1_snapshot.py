@@ -204,16 +204,19 @@ def _compute(curve, ep, *, cache: Cache | None = None,
 
 def _fit(curve, events, res, ep, scenario: tuple) -> None:
     """scenario = (rupture algorithm, invOLS slope to calibrate with)."""
-    from smfs_catalog.roi_events import fit_segments
+    from smfs_catalog.roi_events import FitSettings, SegmentCalibration, fit_segments
     algorithm, invols = scenario
     fit_segments(
-        curve, events, res.offset, invols, res.snap_piezo, low_retr=res.dc.low_retr,
-        chain_model=ep.chain_model, rupture_algorithm=algorithm,
-        walk_back_fit_widths=ep.walk_back_fit_widths,
-        walk_back_noise_multiple=ep.walk_back_noise_multiple,
-        muggeo_fit_window_multiplier=ep.muggeo_fit_window_multiplier,
-        muggeo_tolerance=ep.muggeo_tolerance,
-        muggeo_restarts=ep.muggeo_restarts,
+        curve, events,
+        SegmentCalibration(res.offset, invols, res.snap_piezo, low_retr=res.dc.low_retr),
+        FitSettings(
+            chain_model=ep.chain_model, rupture_algorithm=algorithm,
+            walk_back_fit_widths=ep.walk_back_fit_widths,
+            walk_back_noise_multiple=ep.walk_back_noise_multiple,
+            muggeo_fit_window_multiplier=ep.muggeo_fit_window_multiplier,
+            muggeo_tolerance=ep.muggeo_tolerance,
+            muggeo_restarts=ep.muggeo_restarts,
+        ),
     )
 
 
