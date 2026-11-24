@@ -328,6 +328,9 @@ class DashboardWindow(QMainWindow):
         self._db_path = db_path
         self._scope = new_scope()
         self._children: list[QWidget] = []
+        self._facets_error: str | None = None
+        self._child_errors: dict = {}
+        self._freshness_error: str | None = None
 
         _db.clear_analysis_queue(db_path)
 
@@ -1164,8 +1167,12 @@ class DashboardWindow(QMainWindow):
                 search=scope.get("search"),
             )
         except Exception as exc:
-            report_handled(self._scope_count_lbl.setText, "Refresh filters", exc)
+            def show(text):
+                self._facets_error = text
+                self._scope_count_lbl.setText(text)
+            report_handled(show, "Refresh filters", exc)
             return
+        self._facets_error = None
 
         for key, lst in self._lists.items():
             checked = set(scope.get(key) or [])
@@ -1204,14 +1211,23 @@ class DashboardWindow(QMainWindow):
         self._count_timer.start()
         self.scope_changed.emit(self._scope)
         self._prune_children()
+        errors = getattr(self, "_child_errors", None)
+        if errors is None:
+            errors = self._child_errors = {}
         for win in self._children:
             if hasattr(win, "apply_scope") and win.isVisible():
                 title = win.windowTitle()
                 try:
                     win.apply_scope(self._scope)
                 except Exception as exc:
-                    report_handled(self._scope_count_lbl.setText,
+                    report_handled(lambda t, w=win: errors.__setitem__(w, t),
                                    f"Update {title}", exc)
+                else:
+                    errors.pop(win, None)
+        for win in [w for w in errors if w not in self._children]:
+            del errors[win]
+        if errors:
+            self._scope_count_lbl.setText(_join_messages(errors.values()))
 
     def _prune_children(self) -> None:
         """Drop child windows that have been closed or destroyed."""
@@ -1244,7 +1260,9 @@ class DashboardWindow(QMainWindow):
             self._db_count_lbl.setText(f"(query failed: {exc!r})")
             return
         total = len(rows)
-        self._scope_count_lbl.setText(f"{total:,} files match scope")
+        self._scope_count_lbl.setText(_join_messages(
+            [f"{total:,} files match scope", getattr(self, "_facets_error", None),
+             *(getattr(self, "_child_errors", None) or {}).values()]))
 
         self._db_model.set_rows(rows)
         self._db_count_lbl.setText(f"{total:,} files in scope")
@@ -1466,10 +1484,15 @@ class DashboardWindow(QMainWindow):
         try:
             from .curve_analysis import current_signature
             params_json, code_ver = current_signature(self._db_path)
-            return _db.queue_freshness(params_json, code_ver, self._db_path)
+            fresh = _db.queue_freshness(params_json, code_ver, self._db_path)
         except Exception as exc:
-            report_handled(self._worker_status_lbl.setText, "Queue freshness", exc)
+            def show(text):
+                self._freshness_error = text
+                self._worker_status_lbl.setText(text)
+            report_handled(show, "Queue freshness", exc)
             return {}
+        self._freshness_error = None
+        return fresh
 
     def _status_class(self, file_id: int, status: str | None) -> str:
         """The CLASS the Status column reports: what this row will cost."""
@@ -1608,7 +1631,11 @@ class DashboardWindow(QMainWindow):
         if self._loaded_count or self._cached_count:
             parts.append(f"loaded {self._loaded_count:,} · cached {self._cached_count:,}")
 
-        self._worker_status_lbl.setText("Worker: " + "  ·  ".join(parts) + extra)
+        text = "Worker: " + "  ·  ".join(parts) + extra
+        freshness_error = getattr(self, "_freshness_error", None)
+        if freshness_error:
+            text += "  ·  " + freshness_error
+        self._worker_status_lbl.setText(text)
 
     def _acq_filter_line(self, queue_rows) -> str:
         """Warn when the ACQUISITION filter, not ours, is setting the bandwidth."""
@@ -2159,6 +2186,10 @@ class DashboardWindow(QMainWindow):
             except Exception as exc:
                 report_handled(self._scope_count_lbl.setText,
                                f"Update {title}", exc)
+
+
+def _join_messages(messages) -> str:
+    return "  |  ".join(m for m in messages if m)
 
 
 def _fmt_cell(val, key: str = "") -> str:

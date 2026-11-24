@@ -1386,6 +1386,7 @@ class _ModelPane(QWidget):
             if self._fit_history:
                 self._update_comparison_table()
         except Exception as exc:
+            self._save_status.setStyleSheet(style.qss_text(style.TEXT_BAD, size_px=10))
             report_handled(self._save_status.setText, "Loading saved fits", exc)
 
     # ── DB save ───────────────────────────────────────────────────────────────
@@ -1551,6 +1552,7 @@ class _ModelPane(QWidget):
                 break
         self._update_comparison_table()
         self._save_btn.setEnabled(False)
+        self._save_status.setStyleSheet(style.qss_text(style.TEXT_GOOD, size_px=10))
         self._save_status.setText("Saved ✔")
 
 

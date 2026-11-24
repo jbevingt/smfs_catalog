@@ -1010,9 +1010,10 @@ class ROIWindow(QWidget):
         try:
             owner = _db.active_param_owner(self._db_path)
         except Exception as exc:
-            report_handled(self._status_label.setText, "Parameter owner lookup", exc)
+            report_handled(self._params_label.setText, "Parameter owner lookup", exc)
             return
         if self._owner_synced and owner == self._experimentalist:
+            self._params_label.setText(f"Parameters: {owner}")
             return
         self._owner_synced = True
         self._experimentalist = owner

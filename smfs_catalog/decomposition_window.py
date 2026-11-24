@@ -123,6 +123,7 @@ class DecompositionWindow(QWidget):
         # file's watched directory (see the profile section further down).
         self._experimentalist = experimentalist
         self._owner_synced = False   # force a profile load on the first curve
+        self._owner_error: str | None = None
         self._owner_dir_cache: dict[str, str | None] = {}
         self._worker       = worker
         self._nav          = None   # WorkerNavBar, built below in worker mode
@@ -865,8 +866,12 @@ class DecompositionWindow(QWidget):
         try:
             owner = _db.active_param_owner(self._db_path)
         except Exception as exc:
-            report_handled(self._context_label.setText, "Parameter owner lookup", exc)
+            def show(text):
+                self._owner_error = text
+                self._context_label.setText(text)
+            report_handled(show, "Parameter owner lookup", exc)
             return
+        self._owner_error = None
         if self._owner_synced and owner == self._experimentalist:
             return
         self._owner_synced = True
@@ -1143,6 +1148,9 @@ class DecompositionWindow(QWidget):
             report_handled(self._context_label.setText, "Loading curve", exc)
             return
         self.update_curve(curve)
+        owner_error = getattr(self, "_owner_error", None)
+        if owner_error:
+            self._context_label.setText(owner_error)
 
     def _on_nav_curve_cleared(self) -> None:
         """The displayed curve left the queue — show nothing rather than it."""
