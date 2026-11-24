@@ -32,7 +32,8 @@ def test_physical_grid_key_does_not_round_f_star():
     grid = _ep.HistGrid(_ep.PHYS_X_BINS, _ep.PHYS_F_BINS,
                         _ep.PHYS_X_RANGE, _ep.PHYS_F_RANGE)
     mode, seg = _ep.PHYS_ALIGN_DEFAULT, _ep.ALIGN_SEG_DEFAULT
-    assert _phys_grid_params(50.001, grid, mode, seg) != \n        _phys_grid_params(50.002, grid, mode, seg)
+    assert (_phys_grid_params(50.001, grid, mode, seg)
+            != _phys_grid_params(50.002, grid, mode, seg))
 
 
 def test_normalized_grid_key_covers_ranges_and_segment():
