@@ -87,7 +87,7 @@ def _owners(conn) -> set[str]:
         try:
             rows = conn.execute(
                 f"SELECT DISTINCT experimentalist FROM {table}").fetchall()
-        except Exception:
+        except Exception:  # noqa: BLE001  parked: D8 awaiting decision
             continue
         found.update(r[0] for r in rows if r[0])
     return found

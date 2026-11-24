@@ -75,7 +75,7 @@ def check_db_machine(db_path: str = DEFAULT_DB_PATH) -> Optional[str]:
             "SELECT key, value FROM meta WHERE key IN ('built_host','built_os')"
         ).fetchall())
         conn.close()
-    except Exception:
+    except Exception:  # noqa: BLE001  best-effort host warning; no warning if the meta read fails
         return None
     built_host = rows.get("built_host")
     built_os = rows.get("built_os")

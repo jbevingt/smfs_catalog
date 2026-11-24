@@ -400,12 +400,12 @@ class DashboardWindow(QMainWindow):
             return
         try:
             self._worker.stop()
-        except Exception:
+        except Exception:  # noqa: BLE001  shutdown: a worker that will not stop must not block closing
             pass
         for win in list(self._children):
             try:
                 win.close()
-            except Exception:
+            except Exception:  # noqa: BLE001  shutdown: a child that will not close must not block closing
                 pass
         self._children = []
         super().closeEvent(event)

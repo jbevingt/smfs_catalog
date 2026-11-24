@@ -121,7 +121,7 @@ def _write(text: str) -> None:
     try:
         _handle.write(text if text.endswith("\n") else text + "\n")
         _handle.flush()
-    except Exception:
+    except Exception:  # noqa: BLE001  the logger itself must never raise
         pass
 
 
@@ -133,7 +133,7 @@ def log_handled(context: str, exc: BaseException) -> None:
             f"thread={threading.current_thread().name} {context}\n"
             + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
         )
-    except Exception:
+    except Exception:  # noqa: BLE001  the logger itself must never raise
         pass
 
 

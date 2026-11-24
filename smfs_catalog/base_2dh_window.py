@@ -1019,7 +1019,7 @@ class _TwoDHWindowBase(QMainWindow):
     def _run_pca(self) -> None:
         try:
             self._run_pca_impl()
-        except Exception:
+        except Exception:  # noqa: BLE001  user sees the full traceback via QMessageBox
             import traceback
             QMessageBox.critical(
                 self, "Run PCA failed",

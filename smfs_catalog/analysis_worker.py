@@ -247,7 +247,7 @@ class AnalysisWorker(QThread):
             try:
                 if self._conn is not None:
                     self._conn.close()
-            except Exception:
+            except Exception:  # noqa: BLE001  connection close in finally; nothing to do if it fails
                 pass
             self._conn = None
 
