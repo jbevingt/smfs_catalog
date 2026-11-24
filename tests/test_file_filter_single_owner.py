@@ -84,7 +84,8 @@ def test_no_module_but_scope_maps_scope_keys_to_filters():
 
 _CHANGED = {
     "db.py": ("_file_filter_clauses", "list_files", "get_facet_options",
-              "get_distinct_dates", "get_distinct_values"),
+              "get_distinct_dates", "get_distinct_values",
+              "classification_report_rows"),
     "scope.py": ("scope_to_query",),
 }
 
@@ -99,7 +100,7 @@ def _changed_functions():
 
 
 def test_the_changed_functions_exist():
-    assert len(_changed_functions()) == 6
+    assert len(_changed_functions()) == 7
 
 
 @pytest.mark.parametrize("label, fn", _changed_functions(), ids=[l for l, _ in _changed_functions()])

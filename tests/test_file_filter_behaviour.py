@@ -252,3 +252,31 @@ def test_distinct_values_are_sorted_and_unfiltered(filled):
 def test_distinct_values_ignore_unknown_columns_and_tables(filled):
     assert _distinct(filled, "path") == []
     assert _distinct(filled, "technique", table="other") == []
+
+
+# ---- classification_report_rows: one row per file the filter selects --------
+
+def _report(path, **flt):
+    return db.classification_report_rows(path, FileFilter(**flt) if flt else None)
+
+
+def test_classification_report_has_one_row_per_selected_file(filled):
+    header, rows = _report(filled, users=["Alice"], unique=True, parse_ok=True)
+    assert header[:3] == ["path", "filename", "curve_type"]
+    assert all(len(r) == len(header) for r in rows)
+    assert _letters(r[0] for r in rows) == "af"
+    by_name = {r[1]: r for r in rows}
+    assert by_name["a.ibw"][header.index("experimentalist")] == "Alice"
+    assert by_name["f.ibw"][header.index("measured_date")] == "2026-03-05"
+
+
+def test_classification_report_with_no_filter_covers_every_file(filled):
+    header, rows = db.classification_report_rows(filled)
+    assert _letters(r[0] for r in rows) == "abcdef"
+    assert len(header) == len(rows[0])
+
+
+def test_classification_report_of_an_empty_selection_is_header_only(filled):
+    header, rows = _report(filled, users=["Nobody"])
+    assert rows == []
+    assert header[:2] == ["path", "filename"]
