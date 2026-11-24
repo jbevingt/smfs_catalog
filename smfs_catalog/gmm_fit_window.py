@@ -633,17 +633,17 @@ class _ModelPane(QWidget):
         try:
             _db.save_gmm_fit(
                 GmmFitRecord(
-                    self._x_variable,
-                    self._y_variable,
-                    f["n_values"],
-                    f["k_components"],
-                    f["cov_label"],
-                    json.dumps(f["means"]),
-                    json.dumps(f["covs"]),
-                    json.dumps(f["weights"]),
-                    json.dumps(json_safe_statistics(f["gof"]),
-                               allow_nan=False),
-                    json.dumps({"n_init": _N_INIT}),
+                    x_variable=self._x_variable,
+                    y_variable=self._y_variable,
+                    n_values=f["n_values"],
+                    k_components=f["k_components"],
+                    cov_type=f["cov_label"],
+                    means_json=json.dumps(f["means"]),
+                    covs_json=json.dumps(f["covs"]),
+                    weights_json=json.dumps(f["weights"]),
+                    gof_json=json.dumps(json_safe_statistics(f["gof"]),
+                                        allow_nan=False),
+                    fit_config_json=json.dumps({"n_init": _N_INIT}),
                 ),
                 self._db_path,
             )

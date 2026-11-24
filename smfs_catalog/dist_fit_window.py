@@ -1542,14 +1542,14 @@ class _ModelPane(QWidget):
         try:
             _db.save_distribution_fit(
                 DistFitRecord(
-                    self._variable,
-                    self._units,
-                    f["n_values"],
-                    f["n_peaks"],
-                    f["model_label"],
-                    params_json,
-                    gof_json,
-                    fit_config_json,
+                    variable=self._variable,
+                    units=self._units,
+                    n_values=f["n_values"],
+                    n_peaks=f["n_peaks"],
+                    model_label=f["model_label"],
+                    params_json=params_json,
+                    gof_json=gof_json,
+                    fit_config_json=fit_config_json,
                 ),
                 self._db_path,
             )
