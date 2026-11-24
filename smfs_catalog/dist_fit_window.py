@@ -64,7 +64,7 @@ from . import quantities as _quant
 from . import export_utils as _export
 from .export_utils import slug as _slug
 from .dist_fit_core import (
-    MODELS, MODEL_NAMES, ci_manifest_fields, bootstrap_fit_ci, CI_N_DRAWS,
+    MODELS, MODEL_NAMES, ci_manifest_fields, bootstrap_fit_ci, CiSettings,
     centre_permutation, composite_bounds, composite_guess, fit_stats,
     make_composite, sort_components_by_centre, at_bound_flags,
     flatten_constraints,
@@ -870,14 +870,15 @@ class _ModelPane(QWidget):
         and abort.  Cancelling yields no interval (see
         bootstrap_fit_ci) — never a quiet fall back to the covariance.
         """
+        ci = CiSettings()
         prog = CancelableProgress(
-            self, f"Bootstrapping the confidence interval — {CI_N_DRAWS} refits…",
-            CI_N_DRAWS,
+            self, f"Bootstrapping the confidence interval — {ci.n_draws} refits…",
+            ci.n_draws,
         )
         try:
             boot = bootstrap_fit_ci(
                 components, data, self._plot.edges, self._plot.normalized,
-                popt, bounds, x_fine,
+                popt, bounds, x_fine, ci,
                 progress=lambda i, n: prog.tick(i, n),
             )
         finally:
@@ -1456,8 +1457,9 @@ class _ModelPane(QWidget):
             # it and carries the covariance needed to reconstruct the fit.
             boot = f.get("boot")
             g.note_dict(boot.manifest_fields(f.get("pcov")) if boot is not None
-                        else ci_manifest_fields(f.get("pcov"), False,
-                                                method="none — no interval computed"))
+                        else ci_manifest_fields(
+                            f.get("pcov"), False,
+                            CiSettings(method="none — no interval computed")))
             # Every refit was handed the same limits, so a limit that binds
             # truncates the interval too. That is correct GIVEN the limits, and
             # the manifest has to say the interval is conditional on them.
