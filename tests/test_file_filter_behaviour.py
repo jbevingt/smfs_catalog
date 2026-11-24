@@ -27,6 +27,7 @@ instrument, type, date, k in pN/nm, flags):
 import pytest
 
 from smfs_catalog import db
+from smfs_catalog.file_filter import FileFilter
 
 # path, owner, analyte, solvent, technique, substrate, prep, instrument, type,
 # date, k, quality, parse_ok, unusable_reason, sha
@@ -76,15 +77,15 @@ def filled(catalog):
 # ---- adapters: the only code that changes with the signatures ---------------
 
 def _list(path, **flt):
-    return db.list_files(db_path=path, **flt)
+    return db.list_files(path, FileFilter(**flt))
 
 
 def _facets(path, **flt):
-    return db.get_facet_options(path, **flt)
+    return db.get_facet_options(path, FileFilter(**flt))
 
 
 def _dates(path, **flt):
-    return db.get_distinct_dates(path, **flt)
+    return db.get_distinct_dates(path, FileFilter(**flt))
 
 
 def _distinct(path, column, table="files"):
@@ -92,7 +93,7 @@ def _distinct(path, column, table="files"):
 
 
 def _clauses(exclude_facet, **flt):
-    return db._file_filter_clauses(exclude_facet=exclude_facet, **flt)
+    return db._file_filter_clauses(FileFilter(**flt), exclude_facet=exclude_facet)
 
 
 # ---- helpers (independent of the signatures) --------------------------------
