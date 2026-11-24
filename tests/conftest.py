@@ -19,13 +19,18 @@ def catalog(tmp_path):
 def add_files(catalog, n):
     """Insert n file rows (file_000.ibw ... ) and return their paths as stored (normalised)."""
     paths = []
-    for i in range(n):
-        path = f"/data/session/file_{i:03d}.ibw"
-        db.upsert_file(
-            {"path": path, "filename": f"file_{i:03d}.ibw",
-             "first_seen": "2026-01-01T00:00:00",
-             "last_seen": "2026-01-01T00:00:00"},
-            catalog,
-        )
-        paths.append(db.normalize_path(path))
+    conn = db.get_connection(catalog)
+    try:
+        with conn:  # one connection, one commit for all rows
+            for i in range(n):
+                path = f"/data/session/file_{i:03d}.ibw"
+                db.upsert_file(
+                    {"path": path, "filename": f"file_{i:03d}.ibw",
+                     "first_seen": "2026-01-01T00:00:00",
+                     "last_seen": "2026-01-01T00:00:00"},
+                    catalog, conn=conn,
+                )
+                paths.append(db.normalize_path(path))
+    finally:
+        conn.close()
     return paths
