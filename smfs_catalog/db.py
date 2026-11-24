@@ -1278,8 +1278,16 @@ def classification_report_rows(
     rows = list_files(db_path, flt)
     if not rows:
         return list(_classification_report_columns()), []
+    hit_by_path, seg_by_path = _report_lookups(rows, select, db_path)
+    header = list(_classification_report_columns())
+    out = [_report_record(row, hit_by_path, seg_by_path) for row in rows]
+    return header, out
 
+
+def _report_lookups(rows, select: str, db_path: str) -> tuple[dict, dict]:
+    """The per-path hit cell and segment summary for the report's event rows."""
     from . import criteria_gate as _gate
+    from .roi_pipeline import segment_summary_bulk
     event_paths = [r["path"] for r in rows if r["event"] == "event"]
     hit_by_path: dict[str, str] = {}
     if event_paths:
@@ -1288,29 +1296,27 @@ def classification_report_rows(
         cls = _gate.classify(event_paths, db_path)
         if cls.gate:
             hit_by_path = dict(cls.membership)
-
-    from .roi_pipeline import SEG_SUMMARY_FIELD, SEG_SUMMARY_KEYS, segment_summary_bulk
     seg_by_path: dict[str, dict] = (
         segment_summary_bulk(event_paths, select, db_path) if event_paths else {})
+    return hit_by_path, seg_by_path
 
-    header = list(_classification_report_columns())
-    out: list[list] = []
-    for row in rows:
-        path = row["path"]
-        seg  = seg_by_path.get(path) or {}
-        record = [row[c] if c in row.keys() else "" for c in _FILE_REPORT_COLUMNS]
-        record.append(row["event"])
-        record.append(hit_by_path.get(path, ""))
-        record.extend(seg.get(SEG_SUMMARY_FIELD[k]) for k in SEG_SUMMARY_KEYS)
-        out.append(["" if v is None else v for v in record])
-    return header, out
+
+def _report_record(row, hit_by_path: dict, seg_by_path: dict) -> list:
+    from .roi_pipeline import SEG_SUMMARY_FIELD, SEG_SUMMARY_KEYS
+    path = row["path"]
+    seg  = seg_by_path.get(path) or {}
+    record = [row[c] if c in row.keys() else "" for c in _FILE_REPORT_COLUMNS]
+    record.append(row["event"])
+    record.append(hit_by_path.get(path, ""))
+    record.extend(seg.get(SEG_SUMMARY_FIELD[k]) for k in SEG_SUMMARY_KEYS)
+    return ["" if v is None else v for v in record]
 
 
 def get_distinct_dates(
     db_path: str = DEFAULT_DB_PATH,
     flt: Optional[FileFilter] = None,
 ) -> list[tuple[str, int]]:
-    """Return [(measured_date, n_files), ...] for dates that have at least one parseable file; only the facet and search fields of `flt` narrow it."""
+    """Return [(measured_date, n_files), ...] for dates that have at least one parseable file; `flt` narrows it except that parse_ok is forced True and usable, unique and the date range are ignored."""
     flt = replace(flt or FileFilter(), parse_ok=True, usable=None, unique=None,
                   date_from=None, date_to=None)
     clauses, params = _file_filter_clauses(flt)

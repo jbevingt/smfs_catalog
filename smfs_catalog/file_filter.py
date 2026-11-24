@@ -18,13 +18,6 @@ from typing import Optional
 class FileFilter:
     """Every field defaults to None, meaning "no constraint"."""
 
-    directory: Optional[str] = None
-    directories: Optional[list] = None
-    curve_type: Optional[str] = None
-    curve_types: Optional[list] = None
-    parse_ok: Optional[bool] = None
-    quality: Optional[str] = None
-    search: Optional[str] = None
     users: Optional[list] = None
     analytes: Optional[list] = None
     solvents: Optional[list] = None
@@ -32,12 +25,19 @@ class FileFilter:
     substrates: Optional[list] = None
     sample_preps: Optional[list] = None
     afm_units: Optional[list] = None
+    curve_types: Optional[list] = None
     date_from: Optional[str] = None
     date_to: Optional[str] = None
-    k_min: Optional[float] = None
-    k_max: Optional[float] = None
+    search: Optional[str] = None
+    parse_ok: Optional[bool] = None
     usable: Optional[bool] = None
     unique: Optional[bool] = None
+    directory: Optional[str] = None
+    directories: Optional[list] = None
+    curve_type: Optional[str] = None
+    quality: Optional[str] = None
+    k_min: Optional[float] = None
+    k_max: Optional[float] = None
 
     def set_fields(self) -> dict:
         """The fields that carry a constraint; empty when nothing is set."""
