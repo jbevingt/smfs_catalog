@@ -40,7 +40,9 @@ def test_zero_lp_segment_gives_undefined_fstar_anchor(model):
     anchor = ep.PHYS_ALIGN_ANCHORS["fstar"](x, F, ChainFit(model, (0.0, 50.0)), 5.0)
     assert anchor is None
     # ... and a None anchor drops the curve (no histogram).
-    assert ep.compute_physical_histogram_at(x, F, anchor) is None
+    grid = ep.HistGrid(ep.PHYS_X_BINS, ep.PHYS_F_BINS,
+                       ep.PHYS_X_RANGE, ep.PHYS_F_RANGE)
+    assert ep.compute_physical_histogram_at(x, F, anchor, grid) is None
 
 
 def test_zero_lp_fit_is_not_given_a_new_drop_reason():
