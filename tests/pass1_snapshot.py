@@ -184,9 +184,9 @@ class Cache(NamedTuple):
 
 
 def _analyse(curve, pipeline, cache: Cache | None = None):
-    from smfs_catalog.curve_analysis import analyse_curve
-    kw = {} if cache is None else dict(
-        db_path=cache.db_path, code_ver=CODE_VER, file_id=cache.file_id)
+    from smfs_catalog.curve_analysis import CacheContext, analyse_curve
+    kw = {} if cache is None else {"cache": CacheContext(
+        cache.db_path, CODE_VER, cache.file_id, None)}
     return analyse_curve(curve, pipeline, **kw)
 
 
