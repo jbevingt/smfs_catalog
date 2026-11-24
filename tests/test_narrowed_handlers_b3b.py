@@ -82,10 +82,11 @@ def test_x_at_force_brentq_runtime_error_is_none(monkeypatch):
     assert _wlc_fit().x_at_force(5.0) is None
 
 
-@pytest.mark.parametrize("exc", [TypeError("bug"), ZeroDivisionError("bug")])
-def test_x_at_force_unexpected_exception_propagates(monkeypatch, exc):
-    monkeypatch.setattr(models, "_brentq", _raiser(exc))
-    with pytest.raises(type(exc)):
+def test_x_at_force_unexpected_exception_propagates(monkeypatch):
+    # b7: ZeroDivisionError is now an expected outcome (l_p == 0 -> None, see
+    # tests/test_b7_hardening.py); other bugs such as TypeError still propagate.
+    monkeypatch.setattr(models, "_brentq", _raiser(TypeError("bug")))
+    with pytest.raises(TypeError):
         _wlc_fit().x_at_force(5.0)
 
 
