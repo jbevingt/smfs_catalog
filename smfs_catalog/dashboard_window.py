@@ -1632,10 +1632,8 @@ class DashboardWindow(QMainWindow):
             parts.append(f"loaded {self._loaded_count:,} · cached {self._cached_count:,}")
 
         text = "Worker: " + "  ·  ".join(parts) + extra
-        freshness_error = getattr(self, "_freshness_error", None)
-        if freshness_error:
-            text += "  ·  " + freshness_error
-        self._worker_status_lbl.setText(text)
+        self._worker_status_lbl.setText("  ·  ".join(
+            filter(None, [text, getattr(self, "_freshness_error", None)])))
 
     def _acq_filter_line(self, queue_rows) -> str:
         """Warn when the ACQUISITION filter, not ours, is setting the bandwidth."""
