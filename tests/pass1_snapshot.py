@@ -26,7 +26,7 @@ Comparison rule: EXACT.  A float is stored as repr(float) (all 17 significant
 digits), so `87.31234567890123` vs `87.31234567890124` differs; `nan` equals
 `nan` (both are the string "nan").  A numpy array of up to INLINE_ARRAY_MAX
 elements is stored value by value.  A longer one (the curves have ~17,000
-samples) is stored as dtype, shape, a SHA-256 of its raw float64 bytes (NaN
+samples) is stored as dtype, shape, a SHA-256 of its own dtype's raw bytes (NaN
 written as one canonical NaN, so NaN equals NaN) plus head/tail/min/max for
 reading a failure: equal hash means equal to the last bit.
 
@@ -58,7 +58,9 @@ import numpy as np
 
 SNAPSHOT_PATH = Path(__file__).parent / "snapshots" / "pass1_characterization.json"
 ALGORITHMS = ("low_pass_max", "drawdown_walk_back", "muggeo_segmented")
-VARIANTS = ("one_rupture", "two_rupture", "flat", "noisy_two_rupture")
+VARIANTS = ("one_rupture", "two_rupture", "flat", "noisy_two_rupture",
+            "two_outer_events")
+ORIGINAL_CASES = 12     # the first four variants x 3 algorithms; their catalog rows keep their numbers
 SELECTS = ("ultimate", "penultimate")
 BAD_SELECT = "bogus"
 MISSING_PATH = "/data/session/not_in_catalog.ibw"
@@ -158,7 +160,10 @@ def first_difference(a, b, path: str = "") -> str | None:
         return _dict_difference(a, b, path)
     if isinstance(a, list) and isinstance(b, list) and len(a) == len(b):
         return _list_difference(a, b, path)
-    return None if a == b else f"{path}: {str(a)[:80]} != {str(b)[:80]}"
+    if type(a) is type(b) and a == b:   # same value AND same kind (True is not 1)
+        return None
+    return (f"{path}: {type(a).__name__} {str(a)[:80]} != "
+            f"{type(b).__name__} {str(b)[:80]}")
 
 
 def _captured(call, *errors):
@@ -232,6 +237,19 @@ def _analyse_outputs(curve, pipeline, cache: Cache):
     return outputs, stage1
 
 
+def _compute_after_analyse(curve, ep, cache: Cache):
+    """compute_curve_events_coords on the row analyse_curve just filled.
+
+    The real batch flow: an event-map miss, with offset, invOLS and snap-off all
+    read from analyse_curve's cached rows.  The event map it writes is dropped
+    again so the summary still sees this row as having none.
+    """
+    from smfs_catalog import db
+    flat = flatten(_compute(curve, ep, cache=cache))
+    db.delete_event_map(cache.file_id, cache.db_path)
+    return flat
+
+
 def _compute_outputs(curve, ep, stage1, cache: Cache) -> dict:
     """compute_curve_events_coords: fresh, from stage1, cache miss, hit, forced."""
     outputs = {
@@ -295,6 +313,8 @@ def case_outputs(variant: str, algorithm: str, db_path: str,
     analyse_cache = Cache(db_path, file_ids[0])
     compute_cache = Cache(db_path, file_ids[1], param_set=ap)
     outputs, stage1 = _analyse_outputs(curve, pipeline, analyse_cache)
+    outputs["compute_after_analyse"] = _compute_after_analyse(
+        curve, ep, analyse_cache._replace(param_set=ap))
     outputs.update(_compute_outputs(curve, ep, stage1, compute_cache))
     outputs.update(_fit_outputs(curve, ep))
     return outputs
@@ -317,11 +337,25 @@ def _summary_outputs(db_path: str, paths: list[str], labels: dict) -> dict:
     return outputs
 
 
+def _row_layout(n_cases: int) -> tuple[list[int], list[int]]:
+    """Catalog row of each case's compute call and of its analyse_curve cache call.
+
+    Rows 0-11 compute and 12-23 analyse for the original cases; any later case
+    goes after them, so the original rows keep their numbers and their summary.
+    """
+    old, extra = min(n_cases, ORIGINAL_CASES), max(0, n_cases - ORIGINAL_CASES)
+    compute = list(range(old)) + list(range(2 * old, 2 * old + extra))
+    analyse = (list(range(old, 2 * old))
+               + list(range(2 * old + extra, 2 * old + 2 * extra)))
+    return compute, analyse
+
+
 def collect_all(db_path: str) -> dict:
     """Everything recorded, on an initialised (empty) catalog at db_path.
 
-    Rows 0-11 are the compute cases, rows 12-23 the analyse_curve cache cases,
-    so neither call finds the other's cached values.
+    Each case has its own compute row and its own analyse_curve row (see
+    _row_layout), so neither call finds the other's cached values, except where
+    a call is meant to (compute_after_analyse).
     """
     from conftest import add_files
     from smfs_catalog import db
@@ -329,12 +363,15 @@ def collect_all(db_path: str) -> dict:
     stored = add_files(db_path, 2 * len(cases))
     fids = [db.get_file_id(p, db_path) for p in stored]
     names = _case_labels()
+    compute_rows, analyse_rows = _row_layout(len(cases))
     out = {"cases": {}}
     for i, (variant, algorithm) in enumerate(cases):
-        file_ids = (fids[len(cases) + i], fids[i])   # (analyse row, compute row)
+        file_ids = (fids[analyse_rows[i]], fids[compute_rows[i]])
         out["cases"][names[i]] = case_outputs(
             variant, algorithm, db_path, file_ids)
-    labels = {p: f"row{i:02d}:{(names + names)[i]}" for i, p in enumerate(stored)}
+    row_names = {r: names[i] for i in range(len(cases))
+                 for r in (compute_rows[i], analyse_rows[i])}
+    labels = {p: f"row{i:02d}:{row_names[i]}" for i, p in enumerate(stored)}
     labels[db.normalize_path(MISSING_PATH)] = "missing"
     out["summary"] = _summary_outputs(db_path, list(labels), labels)
     return out

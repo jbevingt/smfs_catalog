@@ -28,7 +28,12 @@ from smfs_catalog.rupture_algorithms import RUPTURE_ALGORITHMS
 
 ALGORITHMS = list(RUPTURE_ALGORITHMS)
 # variant -> number of ruptures it is built to have
-EXPECTED_RUPTURES = {"one_rupture": 1, "two_rupture": 2, "flat": 0, "noisy_two_rupture": 2}
+EXPECTED_RUPTURES = {"one_rupture": 1, "two_rupture": 2, "flat": 0, "noisy_two_rupture": 2,
+                     "two_outer_events": 2}
+# variant -> number of ROIs (outer events) the detector finds; the others have one
+# ROI when they have ruptures at all
+EXPECTED_ROIS = {"one_rupture": 1, "two_rupture": 1, "flat": 0, "noisy_two_rupture": 1,
+                 "two_outer_events": 2}
 ARRAY_FIELDS = ("piezo_appr", "defl_appr", "piezo_retr", "defl_retr")
 
 
@@ -51,7 +56,7 @@ def _segments(coords):
     return [s for roi in coords.events.rois for s in roi.segments]
 
 
-def test_the_variants_are_the_four_the_plan_names():
+def test_the_variants_are_the_plans_four_plus_the_two_outer_event_curve():
     assert set(cf.VARIANTS) == set(EXPECTED_RUPTURES)
 
 
@@ -104,11 +109,12 @@ def test_variant_has_the_number_of_ruptures_its_name_says(variant, algorithm):
     want = EXPECTED_RUPTURES[variant]
     assert len(_ruptures(coords)) == want
     assert verdict.event is (want > 0)
-    assert len(coords.events.rois) == (1 if want else 0)
+    assert len(coords.events.rois) == EXPECTED_ROIS[variant]
 
 
 @pytest.mark.parametrize("algorithm", ALGORITHMS)
-@pytest.mark.parametrize("variant", ["one_rupture", "two_rupture", "noisy_two_rupture"])
+@pytest.mark.parametrize(
+    "variant", ["one_rupture", "two_rupture", "noisy_two_rupture", "two_outer_events"])
 def test_event_variants_get_every_segment_fitted_with_a_force(variant, algorithm):
     _, coords = _analyse(variant, algorithm)
     segments = _segments(coords)
@@ -131,3 +137,22 @@ def test_fitted_contour_lengths_match_the_chains_the_curve_was_built_from(algori
 def test_flat_variant_has_no_segments_to_fit(algorithm):
     _, coords = _analyse("flat", algorithm)
     assert _segments(coords) == []
+
+
+@pytest.mark.parametrize("algorithm", ALGORITHMS)
+def test_two_outer_events_variant_has_one_rupture_in_each_of_two_rois(algorithm):
+    _, coords = _analyse("two_outer_events", algorithm)
+    assert [len(roi.ruptures) for roi in coords.events.rois] == [1, 1]
+    first, second = (roi.ruptures[0] for roi in coords.events.rois)
+    assert first.idx < second.idx
+
+
+def test_the_lever_relaxes_between_the_two_outer_events():
+    """The gap is real: the retract between the breaks is back near zero force."""
+    spec = cf.VARIANTS["two_outer_events"]
+    curve = cf.make_curve("two_outer_events")
+    z = curve.piezo_retr
+    first_break = spec.start_nm + 0.88 * spec.contours_nm[0]
+    gap = (z > first_break + 40.0) & (z < first_break + spec.gap_nm)
+    assert gap.any()
+    assert np.max(np.abs(curve.defl_retr[gap])) < 5.0 * spec.free_sigma_nm

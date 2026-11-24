@@ -16,7 +16,9 @@ detected under default parameters, and segments are fitted under all three
 rupture algorithms.  Deterministic: noise comes from a fresh
 `np.random.default_rng(0)` per call, never a global RNG.
 
-Variants (see VARIANTS): one_rupture, two_rupture, flat, noisy_two_rupture.
+Variants (see VARIANTS): one_rupture, two_rupture, flat, noisy_two_rupture,
+two_outer_events (two ruptures with the lever fully relaxed between them, so
+the detector sees two separate outer events instead of one).
 
 Conventions, matching the loader (see tests/test_force_sign.py):
   * piezo is positive away from the surface; the retract piezo increases;
@@ -56,6 +58,8 @@ class Variant:
     """Contour lengths (nm) of the chains loaded in series, and free-lever noise."""
     contours_nm: tuple[float, ...]
     free_sigma_nm: float
+    gap_nm: float = 0.0   # relaxed stretch (nm of piezo) between one break and the next chain
+    start_nm: float = 0.0  # piezo position where the first chain starts to load
 
 
 VARIANTS = {
@@ -63,6 +67,7 @@ VARIANTS = {
     "two_rupture": Variant((350.0, 450.0), 0.5),
     "flat": Variant((), 0.5),
     "noisy_two_rupture": Variant((350.0, 450.0), 1.2),
+    "two_outer_events": Variant((160.0, 170.0), 0.4, gap_nm=60.0, start_nm=110.0),
 }
 
 
@@ -73,16 +78,24 @@ def _chain_table(l_c: float) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return x, x + force / SPRING_CONSTANT, force
 
 
-def _bending_nm(z: np.ndarray, contours_nm: tuple[float, ...]) -> np.ndarray:
-    """Cantilever bending F/k (nm) at each retract position, for chains in series."""
+def _bending_nm(z: np.ndarray, spec: "Variant") -> np.ndarray:
+    """Cantilever bending F/k (nm) at each retract position, for chains in series.
+
+    With gap_nm > 0 the lever relaxes (no bending) for gap_nm after each break,
+    and the next chain is then loaded from zero extension at that z.  With 0
+    the next chain takes over where the last broke, as before.  The first chain
+    loads from start_nm (0: from the surface).
+    """
     bending = np.zeros_like(z)
-    start = 0.0
-    for l_c in contours_nm:
+    origin = start = spec.start_nm
+    for l_c in spec.contours_nm:
         x_tab, z_tab, force = _chain_table(l_c)
-        stop = float(np.interp(BREAK_FRACTION * l_c, x_tab, z_tab))
+        stop = origin + float(np.interp(BREAK_FRACTION * l_c, x_tab, z_tab))
         on = (z >= start) & (z < stop)
-        bending[on] = np.interp(z[on], z_tab, force) / SPRING_CONSTANT
+        bending[on] = np.interp(z[on] - origin, z_tab, force) / SPRING_CONSTANT
         start = stop
+        if spec.gap_nm > 0.0:
+            origin = start = stop + spec.gap_nm
     return bending
 
 
@@ -100,7 +113,7 @@ def _approach(rng: np.random.Generator, free_sigma: float) -> tuple[np.ndarray, 
 
 def _retract(rng: np.random.Generator, variant: Variant) -> tuple[np.ndarray, np.ndarray]:
     z = np.arange(TURNAROUND_NM, RETRACT_TO_NM, STEP_NM)
-    defl = np.where(z < 0.0, INVOLS * z, INVOLS * _bending_nm(z, variant.contours_nm))
+    defl = np.where(z < 0.0, INVOLS * z, INVOLS * _bending_nm(z, variant))
     return z, defl + _noise(rng, z, variant.free_sigma_nm)
 
 

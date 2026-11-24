@@ -61,3 +61,22 @@ def test_cache_hit_returns_what_the_fresh_call_returned(collected):
             out["compute_cache_second"], out["compute_cache_first"]) is None, label
         assert snap.first_difference(
             out["compute_forced_on_conn"], out["compute_cache_first"]) is None, label
+
+
+def test_calibrations_read_back_from_analyse_curve_rows_give_the_fresh_result(collected):
+    """The real batch flow (offset, invOLS, snap-off all from cache) == no cache."""
+    for label, out in collected["cases"].items():
+        assert snap.first_difference(
+            out["compute_after_analyse"], out["compute_no_cache"]) is None, label
+
+
+@pytest.mark.parametrize("a, b", [
+    (True, 1), (1, True), (False, 0), (None, 0), (0, None), ("1", 1), (None, "None"),
+])
+def test_the_comparison_tells_apart_values_that_are_equal_but_of_another_kind(a, b):
+    assert snap.first_difference(a, b) is not None
+
+
+def test_the_comparison_accepts_identical_leaves_and_nan_strings():
+    same = {"dict": [["k", [True, 1, "x", None, {"float": "nan"}]]]}
+    assert snap.first_difference(same, json.loads(json.dumps(same))) is None
