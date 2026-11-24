@@ -621,6 +621,7 @@ def _mixing_fractions(components: list[ModelSpec], params: np.ndarray) -> np.nda
 
 def _resample_heights(rng, data: np.ndarray, edges: np.ndarray,
                       normalize: bool) -> np.ndarray:
+    """Heights of one bootstrap resample, binned on the fixed original edges."""
     sample = rng.choice(data, size=len(data), replace=True)
     counts, _ = np.histogram(sample, bins=edges)
     if normalize:
@@ -630,6 +631,7 @@ def _resample_heights(rng, data: np.ndarray, edges: np.ndarray,
 
 
 def _bootstrap_band(fn, arr: np.ndarray, x_fine, half: float):
+    """Pointwise (lo, hi) of the refit curves over x_fine, or None."""
     if x_fine is None or not len(x_fine):
         return None
     with np.errstate(all="ignore"):
@@ -672,7 +674,7 @@ def bootstrap_fit_ci(
     """Percentile confidence intervals for a binned mixture fit.
 
     Returns None when there is nothing honest to report; never a quiet
-    fall back to the covariance.  Notes on the design sit above this function.
+    fall back to the covariance.  Notes on the design sit above `_resample_heights`.
     """
     data = np.asarray(data, dtype=float)
     data = data[np.isfinite(data)]
