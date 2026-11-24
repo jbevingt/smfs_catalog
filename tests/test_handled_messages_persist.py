@@ -121,7 +121,7 @@ def _dash_probe(**extra):
 
 def _facets(monkeypatch, fn):
     monkeypatch.setattr(dash._db, "get_facet_options", fn)
-    monkeypatch.setattr(dash._db, "list_files", lambda **_k: [1, 2, 3])
+    monkeypatch.setattr(dash._db, "list_files", lambda *_a, **_k: [1, 2, 3])
 
 
 def test_facets_failure_survives_the_count_refresh(monkeypatch):
