@@ -59,9 +59,10 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 BROAD = {"Exception", "BaseException"}
 
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+
 # The marker comment: hash, the word noqa, a colon, the code BLE001, then
 # whitespace and at least one non-space reason character.
-_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 NOQA_WITH_REASON = re.compile(r"#\s*noqa:\s*BLE001\s+\S")
 
 
@@ -70,27 +71,39 @@ def _modules():
                   + list((ROOT / "scripts").glob("*.py")))
 
 
-def _is_broad(handler: ast.ExceptHandler) -> bool:
+def _handler_names(handler: ast.ExceptHandler) -> list[ast.expr]:
+    """The expressions an `except` clause lists; [] for a bare `except:`."""
     t = handler.type
-    if t is None:  # bare `except:`
-        return True
-    names = t.elts if isinstance(t, ast.Tuple) else [t]
-    return any(isinstance(n, ast.Name) and n.id in BROAD for n in names)
+    if t is None:
+        return []
+    return t.elts if isinstance(t, ast.Tuple) else [t]
+
+
+def _caught_ids(handler: ast.ExceptHandler) -> set[str]:
+    return {n.id for n in _handler_names(handler) if isinstance(n, ast.Name)}
+
+
+def _is_broad(handler: ast.ExceptHandler) -> bool:
+    return handler.type is None or bool(_caught_ids(handler) & BROAD)
+
+
+def _raised_name(raise_node: ast.Raise) -> str | None:
+    """Class name a raise statement raises; None for a bare `raise`."""
+    exc = raise_node.exc
+    if isinstance(exc, ast.Call):
+        exc = exc.func
+    return exc.id if isinstance(exc, ast.Name) else None
+
+
+def _handler_catches(handler: ast.ExceptHandler, raised: str | None) -> bool:
+    return (_is_broad(handler) or raised is None
+            or raised in _caught_ids(handler))
 
 
 def _raise_is_caught(raise_node: ast.Raise, handlers: list[ast.ExceptHandler]) -> bool:
     """Would one of an inner try's own handlers catch this raise?"""
-    exc = raise_node.exc
-    if isinstance(exc, ast.Call):
-        exc = exc.func
-    raised = exc.id if isinstance(exc, ast.Name) else None  # None: bare `raise`
-    for h in handlers:
-        t = h.type
-        names = [] if t is None else (t.elts if isinstance(t, ast.Tuple) else [t])
-        caught = {n.id for n in names if isinstance(n, ast.Name)}
-        if t is None or raised is None or raised in caught or caught & BROAD:
-            return True
-    return False
+    raised = _raised_name(raise_node)
+    return any(_handler_catches(h, raised) for h in handlers)
 
 
 def _swallowed(stmt: ast.stmt, handlers: list[ast.ExceptHandler]) -> bool:
