@@ -36,7 +36,6 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import NamedTuple
 
 import numpy as np
