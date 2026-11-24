@@ -65,11 +65,11 @@ GMM = dict(
 # -- adapters: the only code that knows how the savers are called -----------
 
 def _save_dist(catalog, **kw):
-    db.save_distribution_fit(**{**DIST, **kw}, db_path=catalog)
+    db.save_distribution_fit(_records().DistFitRecord(**{**DIST, **kw}), catalog)
 
 
 def _save_gmm(catalog, **kw):
-    db.save_gmm_fit(**{**GMM, **kw}, db_path=catalog)
+    db.save_gmm_fit(_records().GmmFitRecord(**{**GMM, **kw}), catalog)
 
 
 def _rows(catalog, table):
