@@ -319,6 +319,7 @@ def can_use_cache(cache: CacheContext | None) -> bool:
 
 
 def cache_get(cache: CacheContext | None, atype: str, params: str):
+    """Read one stored scalar analysis result for the cache's file; returns None when can_use_cache is false."""
     if not can_use_cache(cache):
         return None
     return _db.get_analysis_result(cache.file_id, atype, params, cache.code_ver,
@@ -339,6 +340,7 @@ def _cache_get_multi(cache: CacheContext | None, atypes, params: str) -> dict:
 
 
 def cache_put_multi(cache: CacheContext | None, values: dict, params: str) -> None:
+    """Write several scalar analysis results for the cache's file in one call; does nothing when can_use_cache is false."""
     if can_use_cache(cache):
         _db.write_analysis_results_multi(cache.file_id, values, params, cache.code_ver,
                                         cache.db_path, conn=cache.conn)
