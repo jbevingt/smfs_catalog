@@ -286,6 +286,7 @@ def _snapoff_for(dc, ep: EventParams, stage1, cache: CacheContext | None) -> int
 
 
 def _band_for(sigs, si: int, ep: EventParams, stage1):
+    """Always computed, even on an event-map hit: display_roi's mask overlay needs a valid index."""
     from .roi_detection import rupture_search_bounds
 
     if (stage1 is not None and stage1.mask_postsnap_idx is not None
@@ -349,7 +350,10 @@ def _invols_for(curve, dc, ep: EventParams, stage1, cache: CacheContext | None) 
 
 
 def _fit_and_store(curve, events, ep: EventParams, calib, cache: CacheContext | None) -> None:
-    """Fit the freshly built events in place and persist them (calib = offset, invols, snap, low_retr)."""
+    """Fit the freshly built events in place and persist them (calib = offset, invols, snap, low_retr).
+
+    This is the only event_map write: _persist_multi_event_roi does no separate write.
+    """
     from .roi_events import fit_segments, events_to_payload
 
     offset, inv, snap, low_retr = calib
@@ -370,6 +374,7 @@ def _fit_and_store(curve, events, ep: EventParams, calib, cache: CacheContext | 
 
 
 def _decomposed_and_signals(curve, ep: EventParams, stage1, offset: float):
+    """Never stored (large per-sample arrays, cheap to regenerate); computed even on an event-map hit because callers draw them (the ROI window plots dc/sigs)."""
     from .signal_processing import decompose_curve
     from .roi_detection import compute_detection_signals
 
@@ -405,7 +410,8 @@ def compute_curve_events_coords(
     cache means always fresh.  The decomposed curve and detection signals are
     never stored, only reused via `stage1`.
 
-    A stored event_map document under the current signature is checked first; on
+    A stored event_map document under the current signature is checked first for
+    every caller (the WLC viewer included, without an outer guard); on
     a hit the event build and WLC fit are skipped (dc, sigs, band and invOLS are
     still resolved).  A fresh computation is always written to event_map when
     cache identity is available.  ``force=True`` skips only that document; stage-1

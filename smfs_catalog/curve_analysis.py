@@ -165,6 +165,7 @@ def pipeline_params_from(
 
 @dataclass(frozen=True)
 class CacheContext:
+    """Cache identity for analyse_curve / compute_curve_events; param_set only gates scalar-cache reads and writes."""
     db_path: str | None
     code_ver: str | None
     file_id: int | None
