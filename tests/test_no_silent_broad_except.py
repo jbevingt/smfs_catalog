@@ -59,7 +59,9 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 BROAD = {"Exception", "BaseException"}
 
-# `# noqa: BLE001` then whitespace then at least one non-space reason char.
+# The marker comment: hash, the word noqa, a colon, the code BLE001, then
+# whitespace and at least one non-space reason character.
+_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 NOQA_WITH_REASON = re.compile(r"#\s*noqa:\s*BLE001\s+\S")
 
 
@@ -76,9 +78,46 @@ def _is_broad(handler: ast.ExceptHandler) -> bool:
     return any(isinstance(n, ast.Name) and n.id in BROAD for n in names)
 
 
+def _raise_is_caught(raise_node: ast.Raise, handlers: list[ast.ExceptHandler]) -> bool:
+    """Would one of an inner try's own handlers catch this raise?"""
+    exc = raise_node.exc
+    if isinstance(exc, ast.Call):
+        exc = exc.func
+    raised = exc.id if isinstance(exc, ast.Name) else None  # None: bare `raise`
+    for h in handlers:
+        t = h.type
+        names = [] if t is None else (t.elts if isinstance(t, ast.Tuple) else [t])
+        caught = {n.id for n in names if isinstance(n, ast.Name)}
+        if t is None or raised is None or raised in caught or caught & BROAD:
+            return True
+    return False
+
+
+def _swallowed(stmt: ast.stmt, handlers: list[ast.ExceptHandler]) -> bool:
+    """A raise statement that one of the inner try's handlers catches."""
+    return isinstance(stmt, ast.Raise) and _raise_is_caught(stmt, handlers)
+
+
+def _live_raises(nodes) -> bool:
+    """A `raise` that can escape: skips nested scopes (def, lambda, class) and
+    raises that an inner try/except in the same body swallows."""
+    for node in nodes:
+        if isinstance(node, _SCOPES):
+            continue
+        if isinstance(node, ast.Raise):
+            return True
+        if isinstance(node, ast.Try):
+            body = [n for n in node.body if not _swallowed(n, node.handlers)]
+            rest = node.handlers + node.orelse + node.finalbody
+            if _live_raises(body) or _live_raises(rest):
+                return True
+        elif _live_raises(ast.iter_child_nodes(node)):
+            return True
+    return False
+
+
 def _reraises(handler: ast.ExceptHandler) -> bool:
-    return any(isinstance(n, ast.Raise)
-               for stmt in handler.body for n in ast.walk(stmt))
+    return _live_raises(handler.body)
 
 
 def _uses_exception(handler: ast.ExceptHandler) -> bool:
@@ -190,3 +229,28 @@ def test_reports_each_handler_with_its_line_and_function():
         "    except BaseException:\n        pass\n"
     )
     assert silent_broad_handlers(src) == [(4, "a"), (13, "b")]
+
+
+@pytest.mark.parametrize("handler", [
+    # raise only inside a nested scope: never runs when the handler runs
+    "except Exception:\n    def later():\n        raise RuntimeError('x')",
+    "except Exception:\n    cb = lambda: (_ for _ in ()).throw(ValueError())",
+    "except Exception:\n    class E:\n        def m(self):\n            raise ValueError",
+    # raise swallowed by an inner try/except in the same body
+    "except Exception:\n    try:\n        raise ValueError('x')\n    except ValueError:\n        pass",
+    "except Exception:\n    try:\n        raise ValueError\n    except (OSError, ValueError):\n        pass",
+])
+def test_raise_in_nested_scope_or_swallowed_does_not_make_handler_visible(handler):
+    assert len(silent_broad_handlers(_wrap(handler))) == 1
+
+
+@pytest.mark.parametrize("handler", [
+    # an inner try that does not catch the raise still lets it escape
+    "except Exception:\n    try:\n        raise ValueError\n    except OSError:\n        pass",
+    # a raise inside the inner handler itself escapes
+    "except Exception:\n    try:\n        g()\n    except OSError:\n        raise",
+    # a raise nested in an if still counts
+    "except Exception:\n    if g():\n        raise",
+])
+def test_live_raise_inside_nested_statements_still_counts(handler):
+    assert silent_broad_handlers(_wrap(handler)) == []
