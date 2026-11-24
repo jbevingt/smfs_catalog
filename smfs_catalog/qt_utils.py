@@ -37,6 +37,7 @@ _SMALL_FONT_PT = FONT_CAPTION_PT
 
 @contextmanager
 def signals_blocked(*widgets):
+    """Block signals on each widget for the `with` body and restore each one's previous state."""
     prev = [w.blockSignals(True) for w in widgets]
     try:
         yield
@@ -368,6 +369,7 @@ class _DateAxis(pg.AxisItem):
         pass  # never rescale — timestamps are not physical quantities
 
     def tickStrings(self, values, scale, spacing):
+        """Return each timestamp tick as a date/time string, with the format coarsened as tick spacing grows."""
         # spacing is in the same units as values (seconds), regardless of scale
         if not values:
             return []

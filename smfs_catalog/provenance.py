@@ -29,7 +29,11 @@ def app_version() -> str:
 
 
 def sklearn_version() -> str:
-    """Return the installed scikit-learn version, or "unknown" if unavailable."""
+    """Return the installed scikit-learn version, or "unknown" if unavailable.
+
+    Recorded because fit and k-means results can depend on the scikit-learn
+    implementation.
+    """
     try:
         import sklearn
         return str(sklearn.__version__)

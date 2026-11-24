@@ -126,6 +126,7 @@ class _ScatterPane(QWidget):
     # ── Fit overlay ───────────────────────────────────────────────────────────
 
     def show_fit(self, gm: GaussianMixture) -> None:
+        """Draw each mixture component's 1-sigma and 2-sigma ellipses and mean marker, largest weight first."""
         self.clear_fit()
 
         # Sort components largest weight first for consistent color assignment

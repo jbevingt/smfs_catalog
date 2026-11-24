@@ -472,6 +472,7 @@ class _PlotPane(QWidget):
 
     def show_fit(self, x_fine, y_total, y_components, colors, labels,
                  y_fit_at_bins, ci_band=None):
+        """Draw the fitted components, total curve and optional 95% band over the histogram, with the residual panel below."""
         # Remembered so toggling the CI checkbox can redraw without
         # re-running the fit (the fit is unchanged; only its rendering is).
         self._last_fit = (x_fine, y_total, y_components, colors, labels,
