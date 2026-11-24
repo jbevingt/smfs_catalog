@@ -81,26 +81,54 @@ def test_multiple_widgets_restored_after_exception():
     assert b.blocked is True
 
 
+def _is_literal_block_call(node):
+    """True for `<expr>.blockSignals(True)` / `.blockSignals(False)`."""
+    return (isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "blockSignals"
+            and len(node.args) == 1
+            and isinstance(node.args[0], ast.Constant)
+            and isinstance(node.args[0].value, bool))
+
+
+def _exempt_ids(tree, filename):
+    """ids of every node inside qt_utils.signals_blocked (the helper itself)."""
+    if filename != "qt_utils.py":
+        return set()
+    return {id(n)
+            for fn in ast.walk(tree)
+            if isinstance(fn, ast.FunctionDef) and fn.name == "signals_blocked"
+            for n in ast.walk(fn)}
+
+
+def _calls_in_source(source, filename):
+    """Line numbers of hand-written literal blockSignals calls in `source`."""
+    tree = ast.parse(source, filename=filename)
+    exempt = _exempt_ids(tree, filename)
+    return [node.lineno for node in ast.walk(tree)
+            if _is_literal_block_call(node) and id(node) not in exempt]
+
+
 def _hand_written_calls():
     """(file, line) of every .blockSignals(True|False) call outside signals_blocked."""
     found = []
     for path in sorted(PKG.glob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        exempt = set()
-        if path.name == "qt_utils.py":
-            for node in ast.walk(tree):
-                if isinstance(node, ast.FunctionDef) and node.name == "signals_blocked":
-                    exempt.update(id(n) for n in ast.walk(node))
-        for node in ast.walk(tree):
-            if (isinstance(node, ast.Call)
-                    and isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "blockSignals"
-                    and len(node.args) == 1
-                    and isinstance(node.args[0], ast.Constant)
-                    and isinstance(node.args[0].value, bool)
-                    and id(node) not in exempt):
-                found.append((path.name, node.lineno))
+        source = path.read_text(encoding="utf-8")
+        found += [(path.name, n) for n in _calls_in_source(source, path.name)]
     return found
+
+
+def test_guard_logic_catches_a_pair_and_spares_the_helper():
+    pair = chr(10).join(["w.blockSignals(True)", "w.blockSignals(False)"])
+    assert _calls_in_source(pair, "some_window.py") == [1, 2]
+    helper = chr(10).join([
+        "def signals_blocked(*widgets):",
+        "    prev = [w.blockSignals(True) for w in widgets]",
+        "    for w, p in zip(widgets, prev):",
+        "        w.blockSignals(p)",
+    ])
+    assert _calls_in_source(helper, "qt_utils.py") == []
+    assert _calls_in_source(helper, "other.py") == [2]
 
 
 def test_no_hand_written_blocksignals_calls_remain():
