@@ -26,7 +26,17 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-import invols_synth as synth
+import os
+
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+from PyQt6.QtWidgets import QApplication as _QApplication  # noqa: E402
+
+# The app must exist before any smfs_catalog module is imported: some of them
+# build QObjects at import time, which fails when no application exists yet.
+_APP = _QApplication.instance() or _QApplication([])
+
+import invols_synth as synth  # noqa: E402
 from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
 from PyQt6.QtGui import QMouseEvent
 from PyQt6.QtWidgets import (
