@@ -21,6 +21,7 @@ from typing import Optional
 import numpy as np
 from scipy import sparse
 
+from . import crashlog
 from .analysis_params import (
     ANALYSIS_PARAM_DEFAULTS,
     ANALYSIS_PARAM_KEYS,
@@ -2575,7 +2576,8 @@ def get_experimentalist_profile(
     import json
     try:
         return json.loads(row["params_json"])
-    except Exception:
+    except (json.JSONDecodeError, TypeError) as exc:
+        crashlog.log_handled("Read experimentalist profile", exc)
         return None
 
 

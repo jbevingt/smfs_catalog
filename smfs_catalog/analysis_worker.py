@@ -33,6 +33,7 @@ import time
 
 from PyQt6.QtCore import QThread, pyqtSignal, QMutex, QMutexLocker, QWaitCondition
 
+from . import crashlog
 from . import db as _db
 from .curve_analysis import analyse_file
 
@@ -410,8 +411,8 @@ class AnalysisWorker(QThread):
             _db.set_queue_status(
                 file_id, f"error: {message}", self._db_path, conn=self._conn
             )
-        except Exception:
-            pass
+        except Exception as exc:  # noqa: BLE001 - the original error is still signalled below
+            crashlog.log_handled("Save error status", exc)
         self.file_error.emit(file_id, message)
         return "error"
 
