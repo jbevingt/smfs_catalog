@@ -802,7 +802,8 @@ def _segment_fields(seg) -> dict:
     The SELECTED segment's fit values, plus its diagnostics.
 
     l_p_err/l_c_err are the WLC fit's own uncertainty on l_p/l_c; large values
-    flag an under-constrained fit.
+    flag an under-constrained fit.  They inform; they gate nothing by
+    themselves.
 
     fit_status/fit_detail are that same segment's stored fit outcome (see
     roi_events.Segment), so a missing l_c or force can be explained by the
