@@ -363,7 +363,7 @@ def test_load_failure_text_uses_the_error_or_warning_colour(monkeypatch):
 
 def test_saved_message_is_in_the_success_colour_after_a_failure(monkeypatch):
     monkeypatch.setattr(dfw._db, "get_distribution_fits", _boom)
-    monkeypatch.setattr(dfw._db, "save_distribution_fit", lambda **_k: None)
+    monkeypatch.setattr(dfw._db, "save_distribution_fit", lambda *_a, **_k: None)
     p, lbl = _fit_probe()
     dfw._ModelPane._load_saved_fits(p)
     dfw._ModelPane._save_fit(p)
