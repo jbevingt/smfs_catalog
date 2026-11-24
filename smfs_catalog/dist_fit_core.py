@@ -526,7 +526,7 @@ BOOTSTRAP_CI_METHOD = ("nonparametric bootstrap over the raw values "
 
 @dataclass(frozen=True)
 class BootstrapCI:
-    """The spread of `n_ok` refits — see bootstrap_fit_ci."""
+    """The spread of `n_ok` refits — see the design notes above _resample_heights."""
     lo:        np.ndarray            # per parameter, in popt order
     hi:        np.ndarray
     sd:        np.ndarray

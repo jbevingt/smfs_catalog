@@ -342,9 +342,11 @@ class Physical2DHWindow(_TwoDHWindowBase):
                      self._z_pct, self._lut, x_range, f_range),
             AxisLabels(x_label, f_label),
             ExportContext(
-                self._provenance_caption(), self.export_provenance(),
-                list(self._event_histograms.keys()), self._db_path, True,
-                self._overlay_xF),
+                caption=self._provenance_caption(),
+                provenance=self.export_provenance(),
+                paths=list(self._event_histograms.keys()),
+                db_path=self._db_path, physical=True,
+                overlay_fn=self._overlay_xF),
         )
         self._mean_wins.append(win)
         win.show()

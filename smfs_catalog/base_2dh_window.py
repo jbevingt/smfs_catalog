@@ -1111,8 +1111,10 @@ class _TwoDHWindowBase(QMainWindow):
             pca_histograms,
             HistGrid(x_bins, f_bins, x_range, f_range),
             AxisLabels(x_label, f_label, x_unit, f_unit),
-            ExportContext(caption, provenance, None, self._db_path,
-                          self._physical, self._overlay_xF),
+            ExportContext(
+                caption=caption, provenance=provenance, paths=None,
+                db_path=self._db_path, physical=self._physical,
+                overlay_fn=self._overlay_xF),
             display,
         )
         self._pca_win.show()

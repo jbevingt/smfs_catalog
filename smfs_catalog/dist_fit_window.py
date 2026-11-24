@@ -653,6 +653,22 @@ def _set_save_status(label, text: str, colour: str = style.TEXT_GOOD) -> None:
     label.setText(text)
 
 
+def _fit_config_json(f: dict, normalized) -> str:
+    return json.dumps({
+        "n_bins": f["n_bins"],
+        "normalized": normalized,
+        "range_lo": f["range_lo"],
+        "range_hi": f["range_hi"],
+        "range_is_auto": f["range_is_auto"],
+        "n_excluded_by_range": f["n_excluded_by_range"],
+        "user_peak_starts": f["starts"],
+        "user_param_bounds": [None if lim is None else list(lim)
+                              for lim in (f.get("user_bounds") or [])],
+        "constrained": bool(f.get("constrained", False)),
+        "at_user_bound": list(f.get("at_user_bound") or []),
+    })
+
+
 class _ModelPane(QWidget):
     """
     Model builder, fit results, model comparison, and DB save.
@@ -1524,19 +1540,7 @@ class _ModelPane(QWidget):
             )
         ])
         gof_json = json.dumps(f["gof"])
-        fit_config_json = json.dumps({
-            "n_bins": f["n_bins"],
-            "normalized": self._plot.normalized,
-            "range_lo": f["range_lo"],
-            "range_hi": f["range_hi"],
-            "range_is_auto": f["range_is_auto"],
-            "n_excluded_by_range": f["n_excluded_by_range"],
-            "user_peak_starts": f["starts"],
-            "user_param_bounds": [None if lim is None else list(lim)
-                                  for lim in (f.get("user_bounds") or [])],
-            "constrained": bool(f.get("constrained", False)),
-            "at_user_bound": list(f.get("at_user_bound") or []),
-        })
+        fit_config_json = _fit_config_json(f, self._plot.normalized)
 
         try:
             _db.save_distribution_fit(
