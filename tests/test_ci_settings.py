@@ -260,6 +260,28 @@ def test_bootstrap_manifest_carries_the_run_settings():
     }
 
 
+# The manifest is written to disk without sort_keys, so key order is behaviour.
+_BASE_KEYS = ["ci_band_drawn", "ci_method", "ci_pct", "ci_n_draws", "ci_seed",
+              "param_covariance"]
+_BOOT_KEYS = _BASE_KEYS + ["ci_n_draws_ok", "ci_n_draws_failed", "ci_cancelled"]
+
+
+def test_manifest_key_order_for_the_covariance_band():
+    assert list(_manifest(_COV, True)) == _BASE_KEYS
+
+
+def test_manifest_key_order_for_no_interval_computed():
+    out = _manifest(_COV, False, method="none — no interval computed")
+    assert list(out) == _BASE_KEYS
+
+
+def test_bootstrap_manifest_key_order():
+    comps, data, edges, popt, bounds, x_fine = _boot_fixture()
+    b = _bootstrap(comps, data, edges, True, popt, bounds, x_fine,
+                   n_draws=60, pct=90.0, seed=3)
+    assert list(b.manifest_fields(None)) == _BOOT_KEYS
+
+
 def test_bootstrap_failed_draw_handler_is_kept():
     src = inspect.getsource(bootstrap_fit_ci)
     assert "noqa: BLE001" in src and "n_failed += 1" in src
