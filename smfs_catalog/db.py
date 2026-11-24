@@ -10,9 +10,9 @@
 import sqlite3
 import os
 import zlib
-from contextlib import contextmanager
 import sys
 import platform
+from contextlib import contextmanager
 from functools import lru_cache
 from pathlib import Path
 from datetime import datetime
@@ -103,7 +103,7 @@ def _borrowed(conn, db_path, *, commit=False):
     c = conn or get_connection(db_path)
     try:
         if commit:
-            with c:
+            with c:  # sqlite3: commit on success, roll back on error
                 yield c
         else:
             yield c
