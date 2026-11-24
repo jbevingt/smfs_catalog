@@ -125,6 +125,18 @@ def _write(text: str) -> None:
         pass
 
 
+def log_handled(context: str, exc: BaseException) -> None:
+    """Append a caught exception and its traceback to the crash log; never raises."""
+    try:
+        _write(
+            f"\n=== HANDLED EXCEPTION {_timestamp()} pid={os.getpid()} "
+            f"thread={threading.current_thread().name} {context}\n"
+            + "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        )
+    except Exception:
+        pass
+
+
 def _excepthook(exc_type, exc_value, exc_tb) -> None:
     _write(
         f"\n=== UNHANDLED EXCEPTION {_timestamp()} pid={os.getpid()} "
