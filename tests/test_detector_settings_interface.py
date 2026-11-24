@@ -28,6 +28,7 @@ import pytest
 
 from smfs_catalog import roi_events
 from smfs_catalog.roi_events import build_curve_events, find_outer_events
+from size_limits import violations
 
 FIELD_ORDER = ["onset_thr", "detector", "outer_threshold", "inner_threshold",
                "prominence", "distance_pts"]
@@ -155,51 +156,11 @@ def test_build_curve_events_uses_given_outer_events_instead_of_searching():
 
 # -- source-size guard (CLAUDE.md limits), scoped to the two functions -------
 
-_DECISION_NODES = (ast.If, ast.For, ast.While, ast.IfExp, ast.ExceptHandler,
-                   ast.comprehension, ast.match_case)
-_NEST_NODES = (ast.If, ast.For, ast.While, ast.Try, ast.With)
-
-
-def _decision_points(fn) -> int:
-    n = 0
-    for node in ast.walk(fn):
-        if isinstance(node, _DECISION_NODES):
-            n += 1
-        elif isinstance(node, ast.BoolOp):
-            n += len(node.values) - 1
-    return n
-
-
-def _depth(node, d=0) -> int:
-    deepest = d
-    for child in ast.iter_child_nodes(node):
-        deepest = max(deepest, _depth(child, d + 1 if isinstance(child, _NEST_NODES) else d))
-    return deepest
-
-
-def _arg_count(fn) -> int:
-    a = fn.args
-    return len(a.posonlyargs) + len(a.args) + len(a.kwonlyargs) + bool(a.vararg) + bool(a.kwarg)
-
-
 def _functions() -> dict:
     tree = ast.parse(Path(roi_events.__file__).read_text(encoding="utf-8"))
     return {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
 
 
-def _violations(name, fn) -> list:
-    found = []
-    if fn.end_lineno - fn.lineno + 1 > 50:
-        found.append(f"{name}: more than 50 lines")
-    if _decision_points(fn) > 10:
-        found.append(f"{name}: more than 10 decision points")
-    if _depth(fn) > 4:
-        found.append(f"{name}: nesting deeper than 4")
-    if _arg_count(fn) > 5:
-        found.append(f"{name}: more than 5 arguments")
-    return found
-
-
 @pytest.mark.parametrize("name", ["find_outer_events", "build_curve_events"])
 def test_function_is_within_the_size_limits(name):
-    assert _violations(name, _functions()[name]) == []
+    assert violations(name, _functions()[name]) == []

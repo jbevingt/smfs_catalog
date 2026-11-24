@@ -26,6 +26,7 @@ import pytest
 
 from smfs_catalog import roi_events
 from smfs_catalog.roi_events import CurveEvents, ROI, Rupture, Segment, fit_segments
+from size_limits import violations
 
 # The seven fit fields, with the defaults fit_segments has today.
 FIT_FIELDS = {
@@ -168,9 +169,6 @@ def test_fewer_than_five_positive_points_is_refused_and_the_next_segment_sees_it
 
 # ── source-size guard (CLAUDE.md limits), scoped to what c5 touches ──────────
 
-_DECISION_NODES = (ast.If, ast.For, ast.While, ast.IfExp, ast.ExceptHandler,
-                   ast.comprehension, ast.match_case)
-_NEST_NODES = (ast.If, ast.For, ast.While, ast.Try, ast.With)
 # Every top-level function roi_events.py had before c5.  Any other top-level
 # function is a helper c5 introduced and is held to the same limits.
 PRE_C5_FUNCTIONS = {
@@ -183,28 +181,6 @@ PRE_C5_FUNCTIONS = {
 }
 
 
-def _decision_points(fn) -> int:
-    n = 0
-    for node in ast.walk(fn):
-        if isinstance(node, _DECISION_NODES):
-            n += 1
-        elif isinstance(node, ast.BoolOp):
-            n += len(node.values) - 1
-    return n
-
-
-def _depth(node, d=0) -> int:
-    deepest = d
-    for child in ast.iter_child_nodes(node):
-        deepest = max(deepest, _depth(child, d + 1 if isinstance(child, _NEST_NODES) else d))
-    return deepest
-
-
-def _arg_count(fn) -> int:
-    a = fn.args
-    return len(a.posonlyargs) + len(a.args) + len(a.kwonlyargs) + bool(a.vararg) + bool(a.kwarg)
-
-
 def _functions() -> dict:
     tree = ast.parse(Path(roi_events.__file__).read_text(encoding="utf-8"))
     return {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
@@ -214,27 +190,14 @@ def _new_helpers() -> dict:
     return {n: f for n, f in _functions().items() if n not in PRE_C5_FUNCTIONS}
 
 
-def _violations(name, fn) -> list:
-    found = []
-    if fn.end_lineno - fn.lineno + 1 > 50:
-        found.append(f"{name}: more than 50 lines")
-    if _decision_points(fn) > 10:
-        found.append(f"{name}: more than 10 decision points")
-    if _depth(fn) > 4:
-        found.append(f"{name}: nesting deeper than 4")
-    if _arg_count(fn) > 5:
-        found.append(f"{name}: more than 5 arguments")
-    return found
-
-
 def test_fit_segments_is_split_into_named_stages():
     assert len(_new_helpers()) >= 4
 
 
 def test_fit_segments_is_within_the_size_limits():
-    assert _violations("fit_segments", _functions()["fit_segments"]) == []
+    assert violations("fit_segments", _functions()["fit_segments"]) == []
 
 
 def test_every_new_helper_is_within_the_size_limits():
-    found = [v for n, f in _new_helpers().items() for v in _violations(n, f)]
+    found = [v for n, f in _new_helpers().items() for v in violations(n, f)]
     assert found == []

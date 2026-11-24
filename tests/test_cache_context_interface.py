@@ -24,6 +24,7 @@ import pytest
 
 from smfs_catalog import roi_pipeline
 from smfs_catalog.curve_analysis import CacheContext
+from size_limits import violations
 
 OLD_CACHE_KEYWORDS = ("db_path", "code_ver", "file_id", "param_set", "conn")
 
@@ -71,9 +72,6 @@ def test_old_cache_keywords_are_rejected_at_call_time():
 
 # ── source-size guard (CLAUDE.md limits), scoped to what c3 touches ──────────
 
-_DECISION_NODES = (ast.If, ast.For, ast.While, ast.IfExp, ast.ExceptHandler,
-                   ast.comprehension, ast.match_case)
-_NEST_NODES = (ast.If, ast.For, ast.While, ast.Try, ast.With)
 C3_FUNCTIONS = {"compute_curve_events", "compute_curve_events_coords"}
 # Every top-level function roi_pipeline.py had before c3.  Any other top-level
 # function is a helper c3 introduced and is held to the same limits.
@@ -82,28 +80,6 @@ PRE_C3_FUNCTIONS = {
     "coverage", "event_map_params_json", "event_params_from",
     "populate_event_map", "roi_count_histogram", "segment_summary_bulk",
 }
-
-
-def _decision_points(fn) -> int:
-    n = 0
-    for node in ast.walk(fn):
-        if isinstance(node, _DECISION_NODES):
-            n += 1
-        elif isinstance(node, ast.BoolOp):
-            n += len(node.values) - 1
-    return n
-
-
-def _depth(node, d=0) -> int:
-    deepest = d
-    for child in ast.iter_child_nodes(node):
-        deepest = max(deepest, _depth(child, d + 1 if isinstance(child, _NEST_NODES) else d))
-    return deepest
-
-
-def _arg_count(fn) -> int:
-    a = fn.args
-    return len(a.posonlyargs) + len(a.args) + len(a.kwonlyargs) + bool(a.vararg) + bool(a.kwarg)
 
 
 def _functions() -> dict:
@@ -115,28 +91,15 @@ def _new_helpers() -> dict:
     return {n: f for n, f in _functions().items() if n not in PRE_C3_FUNCTIONS}
 
 
-def _violations(name, fn) -> list:
-    found = []
-    if fn.end_lineno - fn.lineno + 1 > 50:
-        found.append(f"{name}: more than 50 lines")
-    if _decision_points(fn) > 10:
-        found.append(f"{name}: more than 10 decision points")
-    if _depth(fn) > 4:
-        found.append(f"{name}: nesting deeper than 4")
-    if _arg_count(fn) > 5:
-        found.append(f"{name}: more than 5 arguments")
-    return found
-
-
 def test_compute_curve_events_coords_is_split_into_named_stages():
     assert len(_new_helpers()) >= 4
 
 
 @pytest.mark.parametrize("name", sorted(C3_FUNCTIONS))
 def test_c3_function_is_within_the_size_limits(name):
-    assert _violations(name, _functions()[name]) == []
+    assert violations(name, _functions()[name]) == []
 
 
 def test_every_new_helper_is_within_the_size_limits():
-    found = [v for n, f in _new_helpers().items() for v in _violations(n, f)]
+    found = [v for n, f in _new_helpers().items() for v in violations(n, f)]
     assert found == []

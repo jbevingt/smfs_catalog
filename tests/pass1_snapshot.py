@@ -10,7 +10,7 @@
 Records what the pass-1 curve functions return today, as plain JSON, so the
 c3-c7 refactors can be shown to change nothing.
 
-`collect_all(db_path)` runs, for each of the 4 synthetic curves x the 3 rupture
+`collect_all(db_path)` runs, for each of the 5 synthetic curves x the 3 rupture
 algorithms: `analyse_curve`, `compute_curve_events_coords` (no cache, from
 stage1, cache miss, cache hit, forced), `fit_segments` (and three edge cases),
 then `segment_summary_bulk` over the populated catalog for every `select`.

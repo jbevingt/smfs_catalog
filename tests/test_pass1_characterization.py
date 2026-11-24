@@ -24,7 +24,7 @@ from smfs_catalog import db
 
 @pytest.fixture(scope="module")
 def collected(tmp_path_factory):
-    """Everything recorded now: one catalog, all 12 cases, the summaries."""
+    """Everything recorded now: one catalog, all 15 cases, the summaries."""
     path = str(tmp_path_factory.mktemp("pass1") / "catalog.db")
     db.initialise(path)   # the same throwaway catalog the `catalog` fixture builds
     return snap.to_json_data(snap.collect_all(path))

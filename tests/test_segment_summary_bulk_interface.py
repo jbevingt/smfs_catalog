@@ -26,6 +26,7 @@ from smfs_catalog import roi_pipeline
 from smfs_catalog.provenance import cache_version
 from smfs_catalog.roi_events import _PAYLOAD_VERSION, payload_to_events
 from smfs_catalog.roi_selection import event_geometry_identity
+from size_limits import violations
 
 summary = roi_pipeline.segment_summary_bulk
 CODE_VER = cache_version() or "test-build"
@@ -43,14 +44,16 @@ ROW_KEYS = {
 
 # -- fixtures / builders ------------------------------------------------------
 
-def _seg(i, l_c, iso_x=None, edge=None, onset=None, **extra):
+def _seg(i, l_c, **extra):
+    """A segment dict; extra keys override fields.  Shorthands: iso_x, edge, onset."""
     d = {
         "left_idx": i * 100, "right_idx": i * 100 + 90,
         "left_piezo_nm": float(i * 100), "right_piezo_nm": float(i * 100 + 90),
         "l_p_nm": 0.4, "l_c_nm": l_c, "l_p_err": 0.05, "l_c_err": 2.0,
-        "isoforce_x_nm": iso_x, "tau": 10.0 * (i + 1),
+        "isoforce_x_nm": extra.pop("iso_x", None), "tau": 10.0 * (i + 1),
         "x_max_nm": None if l_c is None else l_c * 0.8,
-        "left_extension_nm": onset, "edge_pinned": edge,
+        "left_extension_nm": extra.pop("onset", None),
+        "edge_pinned": extra.pop("edge", None),
     }
     d.update(extra)
     return d
@@ -80,8 +83,8 @@ def _three_roi():
     """Forces [50, 80, 120], extensions [10, 20, 30]; onset 4."""
     return _roi(
         [_rup(0, 50.0, 10.0), _rup(1, 80.0, 20.0), _rup(2, 120.0, 30.0)],
-        [_seg(0, 15.0, onset=4.0), _seg(1, 25.0, 20.5, edge=True, onset=100.0),
-         _seg(2, 35.0, 30.7, edge=False, onset=200.0)],
+        [_seg(0, 15.0, onset=4.0), _seg(1, 25.0, iso_x=20.5, edge=True, onset=100.0),
+         _seg(2, 35.0, iso_x=30.7, edge=False, onset=200.0)],
     )
 
 
@@ -253,7 +256,7 @@ def test_single_segment_has_no_pair_metrics_and_none_edge_pinned(cat):
 
 def test_two_segments_penultimate_picks_the_first_segment(cat):
     roi = _roi([_rup(0, 10.0, 1.0), _rup(1, 20.0, 2.0)],
-               [_seg(0, 11.0, onset=0.5), _seg(1, 22.0, 2.5, onset=50.0)])
+               [_seg(0, 11.0, onset=0.5), _seg(1, 22.0, iso_x=2.5, onset=50.0)])
     p = cat.add("/tank/x/two.ibw", _payload(roi))
     pen = summary([p], "penultimate", cat.db)[p]
     assert (pen["l_c_nm"], pen["force_pN"], pen["dF_pN"]) == (11.0, 10.0, 10.0)
@@ -263,7 +266,7 @@ def test_two_segments_penultimate_picks_the_first_segment(cat):
 
 def test_missing_rupture_extension_gives_none_x_fields_and_keeps_dF(cat):
     roi = _roi([_rup(0, 50.0, 10.0), _rup(1, 80.0, None)],
-               [_seg(0, 15.0, onset=4.0), _seg(1, 25.0, 20.5, onset=9.0)])
+               [_seg(0, 15.0, onset=4.0), _seg(1, 25.0, iso_x=20.5, onset=9.0)])
     p = cat.add("/tank/x/m.ibw", _payload(roi))
     row = summary([p], "ultimate", cat.db)[p]
     assert row["force_pN"] == 80.0
@@ -436,10 +439,6 @@ def test_catalog_larger_than_one_sql_chunk_is_fully_resolved(cat):
 
 # -- source-size guard (CLAUDE.md limits), scoped to what c7 touches ----------
 
-_DECISION_NODES = (ast.If, ast.For, ast.While, ast.IfExp, ast.ExceptHandler,
-                   ast.comprehension, ast.match_case)
-_NEST_NODES = (ast.If, ast.For, ast.While, ast.Try, ast.With)
-
 # Every top-level function roi_pipeline.py had at HEAD d939860 (before c7).
 # Helpers are found by call-reachability from segment_summary_bulk among the
 # functions NOT in this set, so helpers c6 adds elsewhere never count.
@@ -452,28 +451,6 @@ PRE_C7_FUNCTIONS = {
     "populate_event_map", "assemble_rows", "segment_summary_bulk",
     "roi_count_histogram", "coverage",
 }
-
-
-def _decision_points(fn) -> int:
-    n = 0
-    for node in ast.walk(fn):
-        if isinstance(node, _DECISION_NODES):
-            n += 1
-        elif isinstance(node, ast.BoolOp):
-            n += len(node.values) - 1
-    return n
-
-
-def _depth(node, d=0) -> int:
-    deepest = d
-    for child in ast.iter_child_nodes(node):
-        deepest = max(deepest, _depth(child, d + 1 if isinstance(child, _NEST_NODES) else d))
-    return deepest
-
-
-def _arg_count(fn) -> int:
-    a = fn.args
-    return len(a.posonlyargs) + len(a.args) + len(a.kwonlyargs) + bool(a.vararg) + bool(a.kwarg)
 
 
 def _functions() -> dict:
@@ -498,27 +475,14 @@ def _c7_helpers() -> dict:
     return found
 
 
-def _violations(name, fn) -> list:
-    found = []
-    if fn.end_lineno - fn.lineno + 1 > 50:
-        found.append(f"{name}: more than 50 lines")
-    if _decision_points(fn) > 10:
-        found.append(f"{name}: more than 10 decision points")
-    if _depth(fn) > 4:
-        found.append(f"{name}: nesting deeper than 4")
-    if _arg_count(fn) > 5:
-        found.append(f"{name}: more than 5 arguments")
-    return found
-
-
 def test_segment_summary_bulk_is_split_into_named_stages():
     assert len(_c7_helpers()) >= 4
 
 
 def test_segment_summary_bulk_is_within_the_size_limits():
-    assert _violations("segment_summary_bulk", _functions()["segment_summary_bulk"]) == []
+    assert violations("segment_summary_bulk", _functions()["segment_summary_bulk"]) == []
 
 
 def test_every_c7_helper_is_within_the_size_limits():
-    found = [v for n, f in _c7_helpers().items() for v in _violations(n, f)]
+    found = [v for n, f in _c7_helpers().items() for v in violations(n, f)]
     assert found == []
