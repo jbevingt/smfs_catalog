@@ -611,6 +611,7 @@ class WlcViewWindow(QMainWindow):
             compute_curve_events_coords, event_geometry_identity, event_params_from,
             resolve_segment_override_state,
         )
+        from .curve_analysis import CacheContext
         from .provenance import cache_version
         try:
             # ONE rule: the file at position one of the analysis queue decides
@@ -624,8 +625,9 @@ class WlcViewWindow(QMainWindow):
             ep = event_params_from(param_set)
             file_id = _db.get_file_id(file_path, self._db_path)
             res = compute_curve_events_coords(
-                curve, ep, db_path=self._db_path, code_ver=cache_version(),
-                file_id=file_id, param_set=param_set,
+                curve, ep,
+                cache=CacheContext(
+                    self._db_path, cache_version(), file_id, None, param_set=param_set),
             )
             events, offset, inv, snap = res.events, res.offset, res.invols, res.snap_piezo
         except Exception as exc:

@@ -83,6 +83,7 @@ from . import style
 from .qt_utils import _make_session_header, set_si_label, fit_on_screen, report_handled, signals_blocked
 from .widgets import FlowLayout, LabeledControl, SampleMarksToggle
 from .navigator_bar import WorkerNavBar
+from .curve_analysis import CacheContext
 from .provenance import cache_version
 
 
@@ -690,8 +691,8 @@ class ROIWindow(QWidget):
             file_id = _db.get_file_id(self._last_path, self._db_path) if self._last_path else None
             res = compute_curve_events_coords(
                 curve, ep,
-                db_path=self._db_path, code_ver=cache_version(), file_id=file_id,
-                param_set=committed,
+                cache=CacheContext(
+                    self._db_path, cache_version(), file_id, None, param_set=committed),
             )
         except Exception as exc:
             self._clear()

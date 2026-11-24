@@ -164,6 +164,15 @@ def pipeline_params_from(
 
 
 @dataclass(frozen=True)
+class CacheContext:
+    db_path: str | None
+    code_ver: str | None
+    file_id: int | None
+    conn: object
+    param_set: AnalysisParams | None = None
+
+
+@dataclass(frozen=True)
 class Stage1Search:
     """
     Intermediate ROI-search state from analyse_curve, returned alongside
@@ -818,8 +827,9 @@ def _persist_multi_event_roi(
 
         ep = event_params_from(param_set)
         compute_curve_events_coords(
-            curve, ep, db_path=db_path, code_ver=code_ver, file_id=file_id,
-            stage1=stage1, param_set=param_set,
+            curve, ep,
+            cache=CacheContext(db_path, code_ver, file_id, None, param_set=param_set),
+            stage1=stage1,
         )
     except CurveAnalysisError:
         raise
