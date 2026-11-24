@@ -47,6 +47,16 @@ def _sigs():
     return SimpleNamespace(d1=d1, low=low, piezo=piezo)
 
 
+def _peak_sigs():
+    """Same event, but each rupture is a true local peak inside its window
+    (find_peaks does not report a flat plateau touching the window edge)."""
+    sigs = _sigs()
+    sigs.d1[:] = 0.0
+    sigs.d1[59:62] = [0.25, 0.35, 0.25]
+    sigs.d1[89:92] = [0.4, 0.8, 0.4]
+    return sigs
+
+
 def _settings(**kw):
     base = dict(onset_thr=-0.2, outer_threshold=0.5)
     base.update(kw)
@@ -117,7 +127,7 @@ def test_build_curve_events_inner_defaults_to_outer():
 
 def test_build_curve_events_find_peaks_detector_is_honoured():
     events = build_curve_events(
-        _sigs(), (10, 110),
+        _peak_sigs(), (10, 110),
         _settings(detector="find_peaks", inner_threshold=0.2,
                   prominence=0.1, distance_pts=5))
     assert events.detector == "find_peaks"
@@ -128,7 +138,7 @@ def test_build_curve_events_distance_pts_reaches_find_peaks():
     # Peaks at about 60 and 90 are 30 apart: a 40-point minimum distance
     # keeps only the stronger one.
     events = build_curve_events(
-        _sigs(), (10, 110),
+        _peak_sigs(), (10, 110),
         _settings(detector="find_peaks", inner_threshold=0.2,
                   prominence=0.1, distance_pts=40))
     assert [r.idx for r in events.rois[0].ruptures] == [90]
