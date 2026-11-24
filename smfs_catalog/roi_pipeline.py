@@ -618,17 +618,216 @@ SEG_SUMMARY_FIELD = {
 }
 
 
-def segment_summary_bulk(
-    paths: list[str], select: str, db_path: str,
-) -> dict[str, dict[str, "float | None"]]:
+def _empty_summary_row() -> dict[str, "float | None"]:
+    return {
+        "l_p_nm": None, "l_c_nm": None, "l_p_err": None, "l_c_err": None,
+        "b_nm": None, "b_err": None, "k_pN": None, "k_err": None,
+        "chain_model": None,
+        "force_pN": None, "x_rupture_nm": None, "x_junction_nm": None,
+        "dF_pN": None, "dX_iso_nm": None, "dX_ext_nm": None,
+        "n_segments": None,
+        "tau": None, "z_max": None, "x_max_nm": None, "edge_pinned": None,
+        "loading_rate_pN_s": None, "loading_stiffness_pN_nm": None,
+        "loading_rate_err_pN_s": None,
+        "loading_stiffness_err_pN_nm": None, "rate_tau": None,
+        "fit_status": None, "fit_detail": None,
+    }
+
+
+def _fetch_rows(paths_resolved: list[str], db_path: str):
     """
-    Per-path {"l_p_nm", "l_c_nm", "l_p_err", "l_c_err", "b_nm", "b_err",
-    "k_pN", "k_err", "chain_model", "force_pN",
-    "x_rupture_nm", "x_junction_nm", "dF_pN", "dX_iso_nm", "dX_ext_nm",
-    "n_segments", "tau", "z_max", "edge_pinned"},
-    read from each curve's latest event_map (whatever params/code produced it —
-    like the 2DH windows, this never silently drops a curve pending a
-    recompute).
+    (path_by_fid, payload_by_fid, params_by_fid, override_by_fid) for the
+    resolved paths.
+
+    Bulk by construction.  A per-path db.get_file_id opens and closes its own
+    sqlite connection each time, and the queue-table rebuild behind every
+    raw-viewer double-click pays that cost again for the whole queue.  So
+    path->file_id and the event_map fetch both go through chunked bulk SQL,
+    the same way get_derived_results_bulk_latest does.
+    """
+    conn = _db.get_connection(db_path)
+    try:
+        path_by_fid: dict[int, str] = {}
+        for chunk in _db._sql_chunks(paths_resolved):
+            ph = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                f"SELECT id, path FROM files WHERE path IN ({ph})", chunk
+            ).fetchall():
+                path_by_fid[r["id"]] = r["path"]
+        if not path_by_fid:
+            return path_by_fid, {}, {}, {}
+
+        # event_map holds exactly one row per file_id (write_event_map deletes
+        # any prior row before inserting), so this is already "the latest" —
+        # no need for a per-file MAX(computed_at) subquery.
+        fids = list(path_by_fid.keys())
+        payload_by_fid: dict[int, str] = {}
+        params_by_fid: dict[int, str] = {}
+        for chunk in _db._sql_chunks(fids):
+            fid_ph = ",".join("?" * len(chunk))
+            for r in conn.execute(
+                f"SELECT file_id, payload_json, params_json FROM event_map "
+                f"WHERE file_id IN ({fid_ph})",
+                chunk,
+            ).fetchall():
+                payload_by_fid[r["file_id"]] = r["payload_json"]
+                params_by_fid[r["file_id"]]  = r["params_json"]
+
+        # Manual segment overrides — bulk, for the same reason as above: one
+        # query, not one per file.
+        override_by_fid = _db.get_segment_overrides_bulk(fids, db_path, conn=conn)
+    finally:
+        conn.close()
+    return path_by_fid, payload_by_fid, params_by_fid, override_by_fid
+
+
+def _pick_roi(events):
+    """
+    The right-most outer ROI with ruptures, or None.  Every selected-segment
+    field below (l_p/l_c/force_pN, n_segments) comes from this ROI, so an
+    earlier ROI is ignored once a later one has ruptures.
+    """
+    return next((r for r in reversed(events.rois) if r.ruptures), None)
+
+
+def _picked_pair_metrics(roi, primary_idx, secondary_idx, pair) -> dict:
+    """
+    dF_pN/dX_ext_nm/dX_iso_nm for a usable Primary+Secondary pick.
+
+    Sorted by actual rupture index, never by which one was tagged Primary vs
+    Secondary, so pick order never flips the sign.  dF_pN/dX_ext_nm need no
+    adjacency (plain subtractions); dX_iso_nm does, and is None for a
+    non-adjacent pair, same as any other missing piece.
+    """
+    out = {"dF_pN": None, "dX_iso_nm": None, "dX_ext_nm": None}
+    lo, hi = sorted((primary_idx, secondary_idx))
+    f_lo, f_hi = roi.ruptures[lo].force_pN, roi.ruptures[hi].force_pN
+    out["dF_pN"] = None if f_lo is None or f_hi is None else f_hi - f_lo
+    # dX_ext_nm is a plain extension-point subtraction — needs no
+    # adjacency, same as dF_pN, unlike dX_iso_nm below.
+    x_lo, x_hi = roi.ruptures[lo].extension_nm, roi.ruptures[hi].extension_nm
+    out["dX_ext_nm"] = None if x_lo is None or x_hi is None else x_hi - x_lo
+    # isoforce_x_nm is only ever stored relative to the IMMEDIATELY
+    # PRECEDING rupture (roi_events.Segment docstring) — a non-
+    # adjacent pair legitimately has no such value to read; None,
+    # same as any other missing piece, never fabricated.
+    if pair is not None:
+        pair_lo, pair_hi = pair
+        rup_lo, seg_hi = roi.ruptures[pair_lo], roi.segments[pair_hi]
+        out["dX_iso_nm"] = (
+            None if rup_lo.extension_nm is None or seg_hi.isoforce_x_nm is None
+            else seg_hi.isoforce_x_nm - rup_lo.extension_nm
+        )
+    return out
+
+
+def _pair_metrics(roi, primary_idx, secondary_idx) -> dict:
+    """
+    dF_pN/dX_iso_nm/dX_ext_nm: the gap between two ruptures.
+
+    By default the last two (ultimate minus penultimate, by definition), so
+    they are NOT selection-dependent (`select`) — flipping `select` moves only
+    l_p_nm/l_c_nm/force_pN.  If Primary AND Secondary are both usable (see
+    resolve_segment_override) they are computed from that pair instead.
+
+    dX_ext_nm is the plain ruptures[hi].extension_nm -
+    ruptures[lo].extension_nm gap — no crossing search, defined regardless of
+    which rupture is stronger, unlike dX_iso_nm (see roi_events.ROI.
+    dX_ext_pairs). It exists so dF_pN has an order-independent extension-side
+    counterpart to compare against; dX_iso_nm remains the deliberately
+    one-directional, force-matched "reload distance" — see roi_events.ROI.
+    isoforce_dX_pairs for why that one is NOT made symmetric the same way.
+    """
+    out = {"dF_pN": None, "dX_iso_nm": None, "dX_ext_nm": None}
+    pair = resolve_isoforce_pair(
+        len(roi.segments), primary_idx, secondary_idx,
+    )
+    if primary_idx is not None and secondary_idx is not None:
+        out = _picked_pair_metrics(roi, primary_idx, secondary_idx, pair)
+    elif pair is not None:
+        lo, hi = pair
+        out["dF_pN"]     = roi.dF_pairs[hi - 1]
+        out["dX_iso_nm"] = roi.isoforce_dX_pairs[hi - 1]
+        out["dX_ext_nm"] = roi.dX_ext_pairs[hi - 1]
+    return out
+
+
+def _segment_diagnostics(seg) -> dict:
+    """
+    tau/z_max/edge_pinned are the SELECTED segment's fit-conditioning
+    diagnostics, following the same selection rule as l_p/l_c so that a value
+    and its explanation always describe the same fit:
+      * tau     — integrated autocorrelation time of that fit's residual, in
+                  samples.  l_p_err/l_c_err ALREADY include sqrt(tau);
+                  this is here so the size of an error bar can be explained.
+      * z_max   — x_max/l_c, how close the fit window got to the WLC pole.  The
+                  fit's conditioning number in all but name; below ~0.8 only the
+                  product l_p*l_c is well determined.  Derived, never stored.
+      * edge_pinned — 1.0 when the force peak sat on the window's right edge, so
+                  the rupture force is an underestimate and the fit stopped
+                  early.  0.0 otherwise, None if no peak was found.
+    All three inform; none of them gates anything by itself.
+    """
+    return {
+        # The three diagnostics describe the SELECTED segment's own fit, so
+        # they follow the same Ultimate/Penultimate/override rule as the
+        # values they explain — an error bar and the tau behind it must
+        # never come from different segments.
+        "tau": seg.tau,
+        "z_max": seg.z_max,
+        # z_max's own numerator. Offered beside it so a low ratio can be
+        # read as a short pull or an overlong contour length, rather than
+        # only as a number that is too small.
+        "x_max_nm": seg.x_max_nm,
+        # The selected segment's own loading ramp, following the same rule
+        # as the force it explains — a rupture force and the rate it was
+        # reached at must never come from different segments.
+        "loading_rate_pN_s": seg.loading_rate_pN_s,
+        "loading_stiffness_pN_nm": seg.loading_stiffness_pN_nm,
+        # Each slope's own uncertainty, following the value it belongs to.
+        "loading_rate_err_pN_s": seg.loading_rate_err_pN_s,
+        "loading_stiffness_err_pN_nm": seg.loading_stiffness_err_pN_nm,
+        "rate_tau": seg.rate_tau,
+        # Numeric 0/1, not a bool: this reaches criteria_gate (which bounds
+        # numbers) and quantities.format_value (which formats them).  The
+        # dataclass keeps the bool; only this projection flattens it.
+        "edge_pinned": (
+            None if seg.edge_pinned is None else float(bool(seg.edge_pinned))
+        ),
+    }
+
+
+def _segment_fields(seg) -> dict:
+    """
+    The SELECTED segment's fit values, plus its diagnostics.
+
+    l_p_err/l_c_err are the WLC fit's own uncertainty on l_p/l_c; large values
+    flag an under-constrained fit.
+
+    fit_status/fit_detail are that same segment's stored fit outcome (see
+    roi_events.Segment), so a missing l_c or force can be explained by the
+    pipeline's own reason. Strings, so they stay out of SEG_SUMMARY_KEYS and
+    are never offered as criteria.
+    """
+    return {
+        "l_p_nm": seg.l_p_nm,
+        "l_c_nm": seg.l_c_nm,
+        "l_p_err": seg.l_p_err,
+        "l_c_err": seg.l_c_err,
+        "b_nm": seg.b_nm, "b_err": seg.b_err,
+        "k_pN": seg.k_pN, "k_err": seg.k_err,
+        # Which model the values above are from, so a view that needs one
+        # model's equation can tell.
+        "chain_model": seg.chain_model,
+        **_segment_diagnostics(seg),
+        "fit_status": seg.fit_status,
+        "fit_detail": seg.fit_detail,
+    }
+
+
+def _rupture_fields(roi, rup) -> dict:
+    """
+    force_pN, x_rupture_nm, x_junction_nm of the reported rupture.
 
     x_rupture_nm/x_junction_nm are the reported rupture's position on the
     extension coordinate — (piezo - snapoff) - deflection, the axis every WLC
@@ -643,257 +842,98 @@ def segment_summary_bulk(
     Both are read off the SAME Rupture as force_pN and therefore follow the
     same select/override rule, so a row's force and extension always describe
     one point.  NOT raw piezo: onset_dx_nm/rupture_dx_nm are that, on a
-    different axis and (for the rupture) a different sample.
+    different axis and (for the rupture) a different sample.  Pinning
+    x_junction_nm to the terminal rupture instead would put one row's force
+    and extension on two different ruptures whenever "penultimate" is in force.
+    """
+    # The x of the SAME point force_pN is the y of — fit_segments sets
+    # both from one sample (roi_events: rup.force_pN / rup.extension_nm
+    # at peak_rel).  Read off the same `rup` here so a row can never
+    # pair a force with an extension from a different rupture.
+    # x_junction_nm measures that rupture from the junction's onset instead
+    # of from snap-off: segments[0] is the onset segment, so its left edge is
+    # the junction's onset whichever segment is reported.
+    onset_x = roi.segments[0].left_extension_nm
+    return {
+        "force_pN": rup.force_pN,
+        "x_rupture_nm": rup.extension_nm,
+        "x_junction_nm": (
+            None if rup.extension_nm is None or onset_x is None
+            else rup.extension_nm - onset_x
+        ),
+    }
 
-    tau/z_max/edge_pinned are the SELECTED segment's fit-
-    conditioning diagnostics, following the same selection rule as l_p/l_c so
-    that a value and its explanation always describe the same fit:
-      * tau     — integrated autocorrelation time of that fit's residual, in
-                  samples.  l_p_err/l_c_err above ALREADY include sqrt(tau);
-                  this is here so the size of an error bar can be explained.
-      * z_max   — x_max/l_c, how close the fit window got to the WLC pole.  The
-                  fit's conditioning number in all but name; below ~0.8 only the
-                  product l_p*l_c is well determined.  Derived, never stored.
-      * edge_pinned — 1.0 when the force peak sat on the window's right edge, so
-                  the rupture force is an underestimate and the fit stopped
-                  early.  0.0 otherwise, None if no peak was found.
-    All three inform; none of them gates anything by itself.
 
-    fit_status/fit_detail are that same segment's stored fit outcome (see
-    roi_events.Segment), so a missing l_c or force can be explained by the
-    pipeline's own reason. Strings, so they stay out of SEG_SUMMARY_KEYS and
-    are never offered as criteria.
+def _fill_row(row, roi, select, primary_idx, secondary_idx) -> None:
+    """
+    Fill one curve's row from its chosen ROI.
 
     l_p_nm/l_c_nm/l_p_err/l_c_err/force_pN come from the SELECTED segment (and
-    its terminating rupture) of the right-most outer ROI with ruptures:
-    "ultimate" = its last segment (the tether/final rupture, or the whole pull
-    if there's only one segment); "penultimate" = the one before it when that
-    ROI has >= 2 segments, else the SAME segment ultimate would use — matching
-    base_2dh_window._stored_segment_fit.  force_pN is the characterization
-    value for "rupture force": whichever segment is selected here IS the
-    rupture force, by definition — one user-facing force number, not a second
-    parallel one alongside a stage-1 scalar.  l_p_err/l_c_err are the WLC
-    fit's own uncertainty on l_p/l_c; large values flag an under-constrained
-    fit.  They inform; they gate nothing by themselves.
+    its terminating rupture): "ultimate" = its last segment (the tether/final
+    rupture, or the whole pull if there's only one segment); "penultimate" =
+    the one before it when the ROI has >= 2 segments, else the SAME segment
+    ultimate would use — matching base_2dh_window._stored_segment_fit.
+    force_pN is the characterization value for "rupture force": whichever
+    segment is selected here IS the rupture force, by definition — one
+    user-facing force number, not a second parallel one alongside a stage-1
+    scalar.  A usable (non-stale) Primary override replaces that choice for
+    this curve outright — an absolute per-curve override, not another value
+    of `select`.
 
-    n_segments is the segment count of that SAME right-most outer ROI —
-    NOT selection-dependent (it describes the ROI, not the pick within it).
-    It exists so a caller who wants "only curves with a real, distinct
-    penultimate segment" can filter on it explicitly (seg_n_segments >= 2)
-    instead of relying on `select` to narrow the population silently.
+    n_segments is the segment count of the ROI — NOT selection-dependent (it
+    describes the ROI, not the pick within it).  It exists so a caller who
+    wants "only curves with a real, distinct penultimate segment" can filter
+    on it explicitly (seg_n_segments >= 2) instead of relying on `select` to
+    narrow the population silently.
+    """
+    row["n_segments"] = len(roi.segments)
+    row.update(_pair_metrics(roi, primary_idx, secondary_idx))
+    # segments/ruptures are always the same length, one segment per
+    # terminating rupture (ROI docstring: "Always len(ruptures) segments"),
+    # so one length check picks both the segment and its rupture.
+    reported = resolve_reported_segment(
+        len(roi.segments), select, primary_idx,
+    )
+    if reported is not None:
+        idx = reported.segment_idx
+        row.update(_segment_fields(roi.segments[idx]))
+        row.update(_rupture_fields(roi, roi.ruptures[idx]))
 
-    x_rupture_nm/x_junction_nm ARE selection-dependent, for the reason above:
-    they belong to the reported rupture, so flipping `select` moves them
-    exactly as it moves force_pN.  Pinning x_junction_nm to the terminal
-    rupture instead would put one row's force and extension on two different
-    ruptures whenever "penultimate" is in force.
 
-    dF_pN/dX_iso_nm/dX_ext_nm are NOT selection-dependent (`select`) either by
-    default — they are the gap between the last two ruptures (ultimate minus
-    penultimate, by definition), so they don't change when `select` is
-    flipped; only l_p_nm/l_c_nm/force_pN do.
-
-    dX_ext_nm is the plain ruptures[hi].extension_nm -
-    ruptures[lo].extension_nm gap — no crossing search, defined regardless of
-    which rupture is stronger, unlike dX_iso_nm (see roi_events.ROI.
-    dX_ext_pairs). It exists so dF_pN has an order-independent extension-side
-    counterpart to compare against; dX_iso_nm remains the deliberately
-    one-directional, force-matched "reload distance" — see roi_events.ROI.
-    isoforce_dX_pairs for why that one is NOT made symmetric the same way.
-
-    Manual segment override: a curve with a usable (non-stale, see
-    resolve_segment_override) Primary pick uses THAT segment for
-    l_p_nm/l_c_nm/l_p_err/l_c_err/force_pN instead of the `select`-driven
-    Ultimate/Penultimate choice — an absolute per-curve override, not another
-    value of `select`. If Primary AND Secondary are both usable, dF_pN/
-    dX_iso_nm/dX_ext_nm are computed from that pair instead of the
-    last-two-ruptures default — sorted by actual rupture index, never by
-    which one was tagged Primary vs Secondary, so pick order never flips the
-    sign. dF_pN/dX_ext_nm need no adjacency (plain subtractions); dX_iso_nm
-    does (isoforce_x_nm is only ever stored relative to the immediately
-    preceding rupture) and is None for a non-adjacent pair, same as any other
-    missing piece below.
+def segment_summary_bulk(
+    paths: list[str], select: str, db_path: str,
+) -> dict[str, dict[str, "float | None"]]:
+    """
+    Per-path dict of the keys in _empty_summary_row (the SEG_SUMMARY_FIELD
+    values plus chain_model, fit_status, fit_detail), read from each curve's
+    latest event_map (whatever params/code produced it — like the 2DH windows,
+    this never silently drops a curve pending a recompute).
 
     Any missing piece (no file, no document, wrong schema version) yields
     None fields — never a fabricated value.  A present-but-single-segment
     ROI under "penultimate" is not one of those: it is the documented
-    fallback above, not an absence.  Keyed by resolved path
-    (db.normalize_path), matching get_derived_results_bulk_latest.
-
-    Bulk by construction.  A per-path db.get_file_id opens and closes its own
-    sqlite connection each time, and the queue-table rebuild behind every
-    raw-viewer double-click pays that cost again for the whole queue.  So
-    path->file_id and the event_map fetch both go through chunked bulk SQL,
-    the same way get_derived_results_bulk_latest does.
+    fallback, not an absence.  Keyed by resolved path (db.normalize_path),
+    matching get_derived_results_bulk_latest.  The per-field rules are in
+    _fetch_rows, _pair_metrics, _segment_fields, _rupture_fields, _fill_row.
     """
     from .roi_events import payload_to_events
 
-    out: dict[str, dict[str, float | None]] = {
-        _db.normalize_path(p): {
-            "l_p_nm": None, "l_c_nm": None, "l_p_err": None, "l_c_err": None,
-            "b_nm": None, "b_err": None, "k_pN": None, "k_err": None,
-            "chain_model": None,
-            "force_pN": None, "x_rupture_nm": None, "x_junction_nm": None,
-            "dF_pN": None, "dX_iso_nm": None, "dX_ext_nm": None,
-            "n_segments": None,
-            "tau": None, "z_max": None, "x_max_nm": None, "edge_pinned": None,
-            "loading_rate_pN_s": None, "loading_stiffness_pN_nm": None,
-            "loading_rate_err_pN_s": None,
-            "loading_stiffness_err_pN_nm": None, "rate_tau": None,
-            "fit_status": None, "fit_detail": None,
-        }
-        for p in paths
-    }
+    out = {_db.normalize_path(p): _empty_summary_row() for p in paths}
     if not paths:
         return out
-
-    def _chunks(seq, size=800):
-        for i in range(0, len(seq), size):
-            yield seq[i:i + size]
-
-    conn = _db.get_connection(db_path)
-    try:
-        paths_resolved = list(out.keys())
-        path_by_fid: dict[int, str] = {}
-        for chunk in _chunks(paths_resolved):
-            ph = ",".join("?" * len(chunk))
-            for r in conn.execute(
-                f"SELECT id, path FROM files WHERE path IN ({ph})", chunk
-            ).fetchall():
-                path_by_fid[r["id"]] = r["path"]
-        if not path_by_fid:
-            return out
-
-        # event_map holds exactly one row per file_id (write_event_map deletes
-        # any prior row before inserting), so this is already "the latest" —
-        # no need for a per-file MAX(computed_at) subquery.
-        fids = list(path_by_fid.keys())
-        payload_by_fid: dict[int, str] = {}
-        params_by_fid: dict[int, str] = {}
-        for chunk in _chunks(fids):
-            fid_ph = ",".join("?" * len(chunk))
-            for r in conn.execute(
-                f"SELECT file_id, payload_json, params_json FROM event_map "
-                f"WHERE file_id IN ({fid_ph})",
-                chunk,
-            ).fetchall():
-                payload_by_fid[r["file_id"]] = r["payload_json"]
-                params_by_fid[r["file_id"]]  = r["params_json"]
-
-        # Manual segment overrides — bulk, for the same reason this function's
-        # own docstring gives: one query, not one per file.
-        override_by_fid = _db.get_segment_overrides_bulk(fids, db_path, conn=conn)
-    finally:
-        conn.close()
-
+    path_by_fid, payload_by_fid, params_by_fid, override_by_fid = _fetch_rows(
+        list(out.keys()), db_path,
+    )
     for fid, doc in payload_by_fid.items():
-        path = path_by_fid[fid]
         events = payload_to_events(json.loads(doc))
-        if events is None:
-            continue
-        roi = next((r for r in reversed(events.rois) if r.ruptures), None)
+        roi = None if events is None else _pick_roi(events)
         if roi is None:
             continue
-        row = out[path]
-        row["n_segments"] = len(roi.segments)
-
         primary_idx, secondary_idx = resolve_segment_override(
             override_by_fid.get(fid, {}), params_by_fid.get(fid), len(roi.segments),
             event_geometry_identity(events),
         )
-
-        pair = resolve_isoforce_pair(
-            len(roi.segments), primary_idx, secondary_idx,
-        )
-        if primary_idx is not None and secondary_idx is not None:
-            lo, hi = sorted((primary_idx, secondary_idx))
-            f_lo, f_hi = roi.ruptures[lo].force_pN, roi.ruptures[hi].force_pN
-            row["dF_pN"] = None if f_lo is None or f_hi is None else f_hi - f_lo
-            # dX_ext_nm is a plain extension-point subtraction — needs no
-            # adjacency, same as dF_pN, unlike dX_iso_nm below.
-            x_lo, x_hi = roi.ruptures[lo].extension_nm, roi.ruptures[hi].extension_nm
-            row["dX_ext_nm"] = None if x_lo is None or x_hi is None else x_hi - x_lo
-            # isoforce_x_nm is only ever stored relative to the IMMEDIATELY
-            # PRECEDING rupture (roi_events.Segment docstring) — a non-
-            # adjacent pair legitimately has no such value to read; None,
-            # same as any other missing piece, never fabricated.
-            if pair is not None:
-                pair_lo, pair_hi = pair
-                rup_lo, seg_hi = roi.ruptures[pair_lo], roi.segments[pair_hi]
-                row["dX_iso_nm"] = (
-                    None if rup_lo.extension_nm is None or seg_hi.isoforce_x_nm is None
-                    else seg_hi.isoforce_x_nm - rup_lo.extension_nm
-                )
-        elif pair is not None:
-            lo, hi = pair
-            row["dF_pN"]     = roi.dF_pairs[hi - 1]
-            row["dX_iso_nm"] = roi.isoforce_dX_pairs[hi - 1]
-            row["dX_ext_nm"] = roi.dX_ext_pairs[hi - 1]
-
-        # segments/ruptures are always the same length, one segment per
-        # terminating rupture (ROI docstring: "Always len(ruptures) segments"),
-        # so one length check picks both the segment and its rupture.
-        seg = None
-        rup = None
-        reported = resolve_reported_segment(
-            len(roi.segments), select, primary_idx,
-        )
-        if reported is not None:
-            seg = roi.segments[reported.segment_idx]
-            rup = roi.ruptures[reported.segment_idx]
-        if seg is not None:
-            row["l_p_nm"] = seg.l_p_nm
-            row["l_c_nm"] = seg.l_c_nm
-            row["l_p_err"] = seg.l_p_err
-            row["l_c_err"] = seg.l_c_err
-            row["b_nm"], row["b_err"] = seg.b_nm, seg.b_err
-            row["k_pN"], row["k_err"] = seg.k_pN, seg.k_err
-            # Which model the values above are from, so a view that needs one
-            # model's equation can tell.
-            row["chain_model"] = seg.chain_model
-            # The three diagnostics describe the SELECTED segment's own fit, so
-            # they follow the same Ultimate/Penultimate/override rule as the
-            # values they explain — an error bar and the tau behind it must
-            # never come from different segments.
-            row["tau"]   = seg.tau
-            row["z_max"] = seg.z_max
-            # z_max's own numerator. Offered beside it so a low ratio can be
-            # read as a short pull or an overlong contour length, rather than
-            # only as a number that is too small.
-            row["x_max_nm"] = seg.x_max_nm
-            # The selected segment's own loading ramp, following the same rule
-            # as the force it explains — a rupture force and the rate it was
-            # reached at must never come from different segments.
-            row["loading_rate_pN_s"]      = seg.loading_rate_pN_s
-            row["loading_stiffness_pN_nm"] = seg.loading_stiffness_pN_nm
-            # Each slope's own uncertainty, following the value it belongs to.
-            row["loading_rate_err_pN_s"]      = seg.loading_rate_err_pN_s
-            row["loading_stiffness_err_pN_nm"] = seg.loading_stiffness_err_pN_nm
-            row["rate_tau"] = seg.rate_tau
-            # Numeric 0/1, not a bool: this reaches criteria_gate (which bounds
-            # numbers) and quantities.format_value (which formats them).  The
-            # dataclass keeps the bool; only this projection flattens it.
-            row["edge_pinned"] = (
-                None if seg.edge_pinned is None else float(bool(seg.edge_pinned))
-            )
-            row["fit_status"] = seg.fit_status
-            row["fit_detail"] = seg.fit_detail
-        if rup is not None:
-            row["force_pN"] = rup.force_pN
-            # The x of the SAME point force_pN is the y of — fit_segments sets
-            # both from one sample (roi_events: rup.force_pN / rup.extension_nm
-            # at peak_rel).  Read off the same `rup` here so a row can never
-            # pair a force with an extension from a different rupture.
-            row["x_rupture_nm"] = rup.extension_nm
-            # The same rupture measured from the junction's onset instead of
-            # from snap-off: how far the junction stretched under load, rather
-            # than how long it was.  segments[0] is the onset segment, so its
-            # left edge is the junction's onset whichever segment is reported.
-            _onset_x = roi.segments[0].left_extension_nm
-            row["x_junction_nm"] = (
-                None if rup.extension_nm is None or _onset_x is None
-                else rup.extension_nm - _onset_x
-            )
+        _fill_row(out[path_by_fid[fid]], roi, select, primary_idx, secondary_idx)
     return out
 
 
