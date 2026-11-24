@@ -55,6 +55,7 @@ from . import db as _db
 from . import quantities as _quant
 from . import export_utils as _export
 from . import variables as _vars
+from .provenance import sklearn_version
 from .gmm_fit_core import (
     COMPONENT_COLORS,
     COV_TYPE_LABELS, COV_TYPES,
@@ -68,17 +69,6 @@ from .quantities import format_value as _q   # ONE formatter: unit and
 # cannot print as 166, 166.2 and 166.20 in three different windows.
 
 _N_INIT = 10   # EM restarts — trades runtime for robustness against local optima
-
-
-def _sklearn_version() -> str:
-    """Recorded in the export manifest: a mixture fit's exact component
-    assignment can depend on the implementation, so reproducing one needs the
-    version as well as the settings."""
-    try:
-        import sklearn
-        return str(sklearn.__version__)
-    except Exception:
-        return "unknown"
 
 
 # ── Scatter pane ──────────────────────────────────────────────────────────────
@@ -594,7 +584,7 @@ class _ModelPane(QWidget):
             g.contributing_files(self._paths)
             g.note_dict(self.export_provenance())
             g.note(goodness_of_fit=json_safe_statistics(f["gof"]),
-                   sklearn_version=_sklearn_version())
+                   sklearn_version=sklearn_version())
 
             rows = []
             order = component_order(gm)

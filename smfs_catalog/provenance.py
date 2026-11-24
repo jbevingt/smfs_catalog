@@ -28,6 +28,15 @@ def app_version() -> str:
     return __version__
 
 
+def sklearn_version() -> str:
+    """Return the installed scikit-learn version, or "unknown" if unavailable."""
+    try:
+        import sklearn
+        return str(sklearn.__version__)
+    except (ImportError, AttributeError):
+        return "unknown"
+
+
 def _frozen_build_commit() -> str | None:
     """Return the commit baked into a frozen build, if it has one."""
     try:
