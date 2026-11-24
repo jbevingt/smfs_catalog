@@ -99,6 +99,18 @@ class EventParams:
     invols_offset_pts: int
     invols_window_pts: int
 
+    def fit_settings(self):
+        from .roi_events import FitSettings
+        return FitSettings(
+            chain_model=self.chain_model,
+            rupture_algorithm=self.rupture_algorithm,
+            walk_back_fit_widths=self.walk_back_fit_widths,
+            walk_back_noise_multiple=self.walk_back_noise_multiple,
+            muggeo_fit_window_multiplier=self.muggeo_fit_window_multiplier,
+            muggeo_tolerance=self.muggeo_tolerance,
+            muggeo_restarts=self.muggeo_restarts,
+        )
+
 
 def event_params_from(
     params: AnalysisParams,
@@ -350,21 +362,13 @@ def _invols_for(curve, dc, ep: EventParams, stage1, cache: CacheContext | None) 
 
 
 def _fit_and_store(curve, events, ep: EventParams, calib, cache: CacheContext | None) -> None:
-    """Fit the freshly built events in place and persist them (calib = offset, invols, snap, low_retr).
+    """Fit the freshly built events in place and persist them (calib is a roi_events.SegmentCalibration).
 
     This is the only event_map write: _persist_multi_event_roi does no separate write.
     """
     from .roi_events import fit_segments, events_to_payload
 
-    offset, inv, snap, low_retr = calib
-    fit_segments(curve, events, offset, inv, snap, low_retr=low_retr,
-                 chain_model=ep.chain_model,
-                 rupture_algorithm=ep.rupture_algorithm,
-                 walk_back_fit_widths=ep.walk_back_fit_widths,
-                 walk_back_noise_multiple=ep.walk_back_noise_multiple,
-                 muggeo_fit_window_multiplier=ep.muggeo_fit_window_multiplier,
-                 muggeo_tolerance=ep.muggeo_tolerance,
-                 muggeo_restarts=ep.muggeo_restarts)
+    fit_segments(curve, events, calib, ep.fit_settings())
     if _can_read_cache(cache):
         _db.write_event_map(
             cache.file_id, json.dumps(events_to_payload(events)),
@@ -427,7 +431,9 @@ def compute_curve_events_coords(
     inv = _invols_for(curve, dc, ep, stage1, cache)
     snap = float(curve.piezo_retr[si]) if 0 <= si < len(curve.piezo_retr) else 0.0
     if stored is None:
-        _fit_and_store(curve, events, ep, (offset, inv, snap, dc.low_retr), cache)
+        from .roi_events import SegmentCalibration
+        _fit_and_store(curve, events, ep,
+                       SegmentCalibration(offset, inv, snap, dc.low_retr), cache)
     return CurveEventsResult(
         events=events, offset=offset, invols=inv, snap_piezo=snap,
         sigs=sigs, dc=dc, snapoff_idx=si,
