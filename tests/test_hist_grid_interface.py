@@ -41,39 +41,27 @@ PKG = Path(ep.__file__).resolve().parent
 
 
 # ── adapter: the only place that knows today's keyword API ───────────────────
-# At d2 each body becomes the commented HistGrid form.
+# Bodies use the HistGrid API (switched when d2 landed).
 
 def _phys_key(f_star, x_bins, f_bins, x_range, f_range, align_mode, align_segment):
-    # return ep._phys_grid_params(
-    #     f_star, ep.HistGrid(x_bins, f_bins, x_range, f_range),
-    #     align_mode, align_segment)
     return ep._phys_grid_params(
-        f_star, x_bins=x_bins, f_bins=f_bins, x_range=x_range, f_range=f_range,
-        align_mode=align_mode, align_segment=align_segment)
+        f_star, ep.HistGrid(x_bins, f_bins, x_range, f_range),
+        align_mode, align_segment)
 
 
 def _wlc_key(x_bins, f_bins, x_range, f_range, align_segment):
-    # return ep._wlc_grid_params(
-    #     ep.HistGrid(x_bins, f_bins, x_range, f_range), align_segment)
     return ep._wlc_grid_params(
-        x_bins=x_bins, f_bins=f_bins, x_range=x_range, f_range=f_range,
-        align_segment=align_segment)
+        ep.HistGrid(x_bins, f_bins, x_range, f_range), align_segment)
 
 
 def _phys_hist(x, F, anchor, x_bins, f_bins, x_range, f_range):
-    # return ep.compute_physical_histogram_at(
-    #     x, F, anchor, ep.HistGrid(x_bins, f_bins, x_range, f_range))
     return ep.compute_physical_histogram_at(
-        x, F, anchor, x_bins=x_bins, f_bins=f_bins,
-        x_range=x_range, f_range=f_range)
+        x, F, anchor, ep.HistGrid(x_bins, f_bins, x_range, f_range))
 
 
 def _wlc_hist(x, F, l_p, l_c, x_bins, f_bins, x_range, f_range):
-    # return ep.compute_wlc_histogram(
-    #     x, F, l_p, l_c, ep.HistGrid(x_bins, f_bins, x_range, f_range))
     return ep.compute_wlc_histogram(
-        x, F, l_p, l_c, x_bins=x_bins, f_bins=f_bins,
-        x_range=x_range, f_range=f_range)
+        x, F, l_p, l_c, ep.HistGrid(x_bins, f_bins, x_range, f_range))
 
 
 # ── interface: HistGrid ──────────────────────────────────────────────────────
@@ -187,14 +175,14 @@ def test_wlc_grid_params_string_is_byte_identical(args, expected):
     assert _wlc_key(*args) == expected
 
 
-def test_phys_worked_example_old_call_equals_hist_grid_call():
-    """The plan's worked example, both spellings, no adapter."""
-    old = ep._phys_grid_params(
-        50.0, x_bins=200, f_bins=150, x_range=(-20, 80), f_range=(0, 300))
+def test_phys_worked_example_hist_grid_call_gives_the_old_call_string():
+    """The plan's worked example.  The old keyword call
+    _phys_grid_params(50.0, x_bins=200, f_bins=150, x_range=(-20, 80),
+    f_range=(0, 300)) returned this exact string (recorded before d2)."""
     new = ep._phys_grid_params(
         50.0, ep.HistGrid(200, 150, (-20, 80), (0, 300)),
         ep.PHYS_ALIGN_DEFAULT, ep.ALIGN_SEG_DEFAULT)
-    assert new == old == PHYS_KEYS[0][1]
+    assert new == PHYS_KEYS[0][1]
 
 
 # ── behaviour pins for the histograms (same arrays as before d2) ─────────────
