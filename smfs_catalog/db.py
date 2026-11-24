@@ -29,6 +29,7 @@ from .analysis_params import (
     AnalysisParams,
 )
 from .file_filter import FileFilter
+from .fit_records import DistFitRecord, GmmFitRecord
 from .path_pattern import path_matches
 
 APP_NAME = "smfs_catalog"
@@ -2563,16 +2564,8 @@ def merge_experimentalist_profile(
 
 
 def save_distribution_fit(
-    variable:        str,
-    units:           str,
-    n_values:        int,
-    n_peaks:         int,
-    model_label:     str,
-    params_json:     str,
-    gof_json:        str,
-    fit_config_json: str,
-    db_path:         str = DEFAULT_DB_PATH,
-    experimentalist: str = "",
+    record:  DistFitRecord,
+    db_path: str = DEFAULT_DB_PATH,
 ) -> None:
     """Insert one committed distribution fit."""
     conn = get_connection(db_path)
@@ -2582,8 +2575,9 @@ def save_distribution_fit(
                 (variable, units, n_values, n_peaks, model_label,
                  params_json, gof_json, fit_config_json, created_at, experimentalist)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (variable, units, n_values, n_peaks, model_label,
-              params_json, gof_json, fit_config_json, _now(), experimentalist))
+        """, (record.variable, record.units, record.n_values, record.n_peaks,
+              record.model_label, record.params_json, record.gof_json,
+              record.fit_config_json, _now(), record.experimentalist))
     conn.close()
 
 
@@ -2603,18 +2597,8 @@ def get_distribution_fits(
 
 
 def save_gmm_fit(
-    x_variable:      str,
-    y_variable:      str,
-    n_values:        int,
-    k_components:    int,
-    cov_type:        str,
-    means_json:      str,
-    covs_json:       str,
-    weights_json:    str,
-    gof_json:        str,
-    fit_config_json: str = "{}",
-    db_path:         str = DEFAULT_DB_PATH,
-    experimentalist: str = "",
+    record:  GmmFitRecord,
+    db_path: str = DEFAULT_DB_PATH,
 ) -> None:
     """Insert one committed 2D GMM fit."""
     conn = get_connection(db_path)
@@ -2625,9 +2609,10 @@ def save_gmm_fit(
                  means_json, covs_json, weights_json, gof_json,
                  fit_config_json, created_at, experimentalist)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (x_variable, y_variable, n_values, k_components, cov_type,
-              means_json, covs_json, weights_json, gof_json,
-              fit_config_json, _now(), experimentalist))
+        """, (record.x_variable, record.y_variable, record.n_values,
+              record.k_components, record.cov_type, record.means_json,
+              record.covs_json, record.weights_json, record.gof_json,
+              record.fit_config_json, _now(), record.experimentalist))
     conn.close()
 
 

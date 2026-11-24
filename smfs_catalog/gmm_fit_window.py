@@ -52,6 +52,7 @@ from PyQt6.QtWidgets import (
 
 from . import style
 from . import db as _db
+from .fit_records import GmmFitRecord
 from . import quantities as _quant
 from . import export_utils as _export
 from . import variables as _vars
@@ -631,18 +632,20 @@ class _ModelPane(QWidget):
         f = self._last_fit
         try:
             _db.save_gmm_fit(
-                x_variable      = self._x_variable,
-                y_variable      = self._y_variable,
-                n_values        = f["n_values"],
-                k_components    = f["k_components"],
-                cov_type        = f["cov_label"],
-                means_json      = json.dumps(f["means"]),
-                covs_json       = json.dumps(f["covs"]),
-                weights_json    = json.dumps(f["weights"]),
-                gof_json        = json.dumps(json_safe_statistics(f["gof"]),
-                                             allow_nan=False),
-                fit_config_json = json.dumps({"n_init": _N_INIT}),
-                db_path         = self._db_path,
+                GmmFitRecord(
+                    self._x_variable,
+                    self._y_variable,
+                    f["n_values"],
+                    f["k_components"],
+                    f["cov_label"],
+                    json.dumps(f["means"]),
+                    json.dumps(f["covs"]),
+                    json.dumps(f["weights"]),
+                    json.dumps(json_safe_statistics(f["gof"]),
+                               allow_nan=False),
+                    json.dumps({"n_init": _N_INIT}),
+                ),
+                self._db_path,
             )
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))

@@ -58,6 +58,7 @@ from PyQt6.QtWidgets import (
 
 from . import style
 from . import db as _db
+from .fit_records import DistFitRecord
 from . import histogram_binning as _hb
 from . import quantities as _quant
 from . import export_utils as _export
@@ -1538,15 +1539,17 @@ class _ModelPane(QWidget):
 
         try:
             _db.save_distribution_fit(
-                variable        = self._variable,
-                units           = self._units,
-                n_values        = f["n_values"],
-                n_peaks         = f["n_peaks"],
-                model_label     = f["model_label"],
-                params_json     = params_json,
-                gof_json        = gof_json,
-                fit_config_json = fit_config_json,
-                db_path         = self._db_path,
+                DistFitRecord(
+                    self._variable,
+                    self._units,
+                    f["n_values"],
+                    f["n_peaks"],
+                    f["model_label"],
+                    params_json,
+                    gof_json,
+                    fit_config_json,
+                ),
+                self._db_path,
             )
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
