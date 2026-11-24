@@ -10,10 +10,9 @@
 Pass-1 step d3 behaviour pins: what the five windows do with the labels, units,
 caption, provenance, paths and database they are given.
 
-Written through the small adapters below against today's keyword API, so they
-pass now.  At d3 only the adapters' bodies change, to the AxisLabels / HistView /
-ExportContext / FitContext / HistGrid form named in each comment.  The tests
-themselves must not change.
+Written through the small adapters below, which were switched from the old
+keyword API to the AxisLabels / HistView / ExportContext / FitContext / HistGrid
+form when d3 landed.  The tests themselves did not change.
 """
 from __future__ import annotations
 
@@ -29,6 +28,10 @@ pytest.importorskip("pyqtgraph")
 
 from PyQt6.QtWidgets import QApplication
 
+from smfs_catalog.event_processor import HistGrid
+from smfs_catalog.plot_context import (
+    AxisLabels, ExportContext, FitContext, HistView,
+)
 from smfs_catalog.dist_fit_window import _ModelPane as _DistModelPane, _PlotPane
 from smfs_catalog.gmm_fit_window import _ModelPane as _GmmModelPane, _ScatterPane
 from smfs_catalog.mean_curve_window import MeanCurveWindow
@@ -49,58 +52,45 @@ def _overlay(path):
 def _mean_curve(counts, *, title, x_range, f_range, x_label, f_label, x_unit,
                 f_unit, caption, physical, paths, provenance, db_path,
                 overlay_fn=None, z_pct=100, auto_max=1.0):
-    # d3: MeanCurveWindow(title,
-    #   HistView(counts, auto_max, z_pct, _LUT, x_range, f_range),
-    #   AxisLabels(x_label, f_label, x_unit, f_unit),
-    #   ExportContext(caption, provenance, paths, db_path, physical, overlay_fn))
     return MeanCurveWindow(
-        title=title, display=np.sqrt(counts), counts=counts, auto_max=auto_max,
-        z_pct=z_pct, lut=_LUT, x_range=x_range, f_range=f_range,
-        x_label=x_label, f_label=f_label, x_unit=x_unit, f_unit=f_unit,
-        caption=caption, physical=physical, paths=paths, overlay_fn=overlay_fn,
-        db_path=db_path, provenance=provenance)
+        title,
+        HistView(counts, auto_max, z_pct, _LUT, x_range, f_range),
+        AxisLabels(x_label, f_label, x_unit, f_unit),
+        ExportContext(caption, provenance or {}, paths or [], db_path, physical,
+                      overlay_fn))
 
 
 def _pca(histograms, *, x_bins, f_bins, x_range, f_range, x_label, f_label,
          x_unit, f_unit, caption, provenance, db_path, physical, overlay_fn):
-    # d3: PCAWindow(histograms,
-    #   HistGrid(x_bins, f_bins, x_range, f_range),
-    #   AxisLabels(x_label, f_label, x_unit, f_unit),
-    #   ExportContext(caption, provenance, None, db_path, physical, overlay_fn))
     return PCAWindow(
-        histograms=histograms, x_bins=x_bins, f_bins=f_bins, x_range=x_range,
-        f_range=f_range, x_label=x_label, f_label=f_label, x_unit=x_unit,
-        f_unit=f_unit, caption=caption, provenance=provenance, db_path=db_path,
-        physical=physical, overlay_fn=overlay_fn)
+        histograms,
+        HistGrid(x_bins, f_bins, x_range, f_range),
+        AxisLabels(x_label, f_label, x_unit, f_unit),
+        ExportContext(caption, provenance, [], db_path, physical, overlay_fn))
 
 
 def _scatter(xy, x_label, y_label, x_unit, y_unit, caption):
-    # d3: _ScatterPane(xy, AxisLabels(x_label, y_label, x_unit, y_unit), caption)
-    return _ScatterPane(xy, x_label, y_label, x_unit, y_unit, caption=caption)
+    return _ScatterPane(xy, AxisLabels(x_label, y_label, x_unit, y_unit), caption)
 
 
 def _gmm_model(scatter, xy, x_label, y_label, x_unit, y_unit, db_path, paths,
                caption):
-    # d3: _ModelPane(scatter, xy, AxisLabels(x_label, y_label, x_unit, y_unit),
-    #                FitContext(db_path, paths, caption))
-    return _GmmModelPane(scatter, xy, x_label, y_label, db_path, x_unit=x_unit,
-                         y_unit=y_unit, paths=paths, caption=caption)
+    return _GmmModelPane(scatter, xy,
+                         AxisLabels(x_label, y_label, x_unit, y_unit),
+                         FitContext(db_path, paths, caption))
 
 
 def _dist_model(plot, variable, units, db_path, paths, caption):
-    # d3: _ModelPane(plot, variable, units, FitContext(db_path, paths, caption))
-    return _DistModelPane(plot, variable, units, db_path, paths=paths,
-                          caption=caption)
+    return _DistModelPane(plot, variable, units,
+                          FitContext(db_path, paths, caption))
 
 
 def _paths_of(window):
-    # d3: window._context.paths (MeanCurveWindow, FitContext panes)
-    return window._paths
+    return window._context.paths
 
 
 def _db_of(pane):
-    # d3: pane._context.db_path
-    return pane._db_path
+    return pane._context.db_path
 
 
 # -- MeanCurveWindow -----------------------------------------------------------

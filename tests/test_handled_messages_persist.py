@@ -338,7 +338,8 @@ def _fit_probe():
          "range_hi": 1.0, "range_is_auto": True, "n_excluded_by_range": 0,
          "starts": [], "n_values": 50, "n_peaks": 1, "model_label": "G1"}
     p = SimpleNamespace(
-        _save_status=lbl, _variable="v", _units="u", _db_path="x.db",
+        _save_status=lbl, _variable="v", _units="u",
+        _context=SimpleNamespace(db_path="x.db"),
         _fit_history=[{"saved": False}], _last_fit=f,
         _plot=SimpleNamespace(normalized=False), _save_btn=_Btn(),
         _update_comparison_table=lambda: None)
