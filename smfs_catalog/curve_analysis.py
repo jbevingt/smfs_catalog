@@ -546,9 +546,7 @@ def _fresh_roi(curve, p, offset: float, snap_idx: int | None, dc) -> _Roi:
             sigs.piezo, si_roi, float(p.anchor_nm), p.roi_post_mask,
         )
         outer_events = find_outer_events(
-            sigs.d1, sigs.low, sigs.piezo,
-            lo=lo_band, hi=hi_band, onset_thr=p.roi_onset_thr,
-            outer_threshold=p.roi_d1_thr,
+            sigs, (lo_band, hi_band), p.roi_onset_thr, p.roi_d1_thr,
         )
         rup_idx = ons_idx = None
         rupture_z = onset_z = _NAN

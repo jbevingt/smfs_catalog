@@ -533,13 +533,18 @@ class OuterEventBoundary:
     terminal_run_hi: int
 
 
+def _terminal_run(d1: np.ndarray, i: int, lo: int, outer: float) -> tuple[int, int, int]:
+    """The d1 run above `outer` ending at i, and its peak: (run_lo, run_hi, terminal_idx)."""
+    j = i
+    while j >= lo and d1[j] > outer:
+        j -= 1
+    run_lo = j + 1
+    return run_lo, i, run_lo + int(np.argmax(d1[run_lo:i + 1]))
+
+
 def find_outer_events(
-    d1: np.ndarray,
-    level: np.ndarray,
-    piezo: np.ndarray,
-    *,
-    lo: int,
-    hi: int,
+    sigs,
+    band: tuple[int, int],
     onset_thr: float,
     outer_threshold: float,
 ) -> list[OuterEventBoundary]:
@@ -549,9 +554,10 @@ def find_outer_events(
     the curve verdict and the later finer segmentation. It makes no decision
     about how many segments an event contains.
     """
+    d1 = sigs.d1
     outer = float(outer_threshold)
-    lo = max(0, int(lo))
-    hi = min(len(d1), int(hi))
+    lo = max(0, int(band[0]))
+    hi = min(len(d1), int(band[1]))
     found: list[OuterEventBoundary] = []
 
     i = hi - 1
@@ -560,15 +566,9 @@ def find_outer_events(
             i -= 1
             continue
 
-        run_hi = i
-        j = i
-        while j >= lo and d1[j] > outer:
-            j -= 1
-        run_lo = j + 1
-        terminal_idx = run_lo + int(np.argmax(d1[run_lo:run_hi + 1]))
-
+        run_lo, run_hi, terminal_idx = _terminal_run(d1, i, lo, outer)
         onset_idx = find_onset(
-            level, piezo, terminal_idx, lo, onset_thr,
+            sigs.low, sigs.piezo, terminal_idx, lo, onset_thr,
         ).onset_idx
         if onset_idx < 0:
             i = run_lo - 1
@@ -586,27 +586,74 @@ def find_outer_events(
     return found
 
 
+@dataclass(frozen=True)
+class DetectorSettings:
+    """The detector arguments of build_curve_events, grouped."""
+    onset_thr:       float
+    detector:        str = "d1_threshold"
+    outer_threshold: float = 0.2
+    inner_threshold: float | None = None
+    prominence:      float = 0.1
+    distance_pts:    int   = 25
+
+
+def _roi_for_boundary(
+    sigs,
+    boundary: OuterEventBoundary,
+    hi: int,
+    inner: float,
+    settings: DetectorSettings,
+) -> ROI | None:
+    """The ROI for one outer boundary, or None when no rupture is detected in it."""
+    d1, piezo = sigs.d1, sigs.piezo
+    onset_idx = boundary.onset_idx
+
+    # Outer-ROI RIGHT edge = the terminal's OWN d1 excursion end.  Walk right
+    # from the outer run only while d1 stays above INNER, then stop at the gap.
+    # A feature further baseline-ward that never crosses OUTER (a weak post-
+    # event bump) is separated by a d1<inner gap, so it is NOT enclosed and
+    # cannot become an event — only an OUTER crossing opens/bounds an ROI.
+    # (level's baseline return can lag far past the terminal when the tip
+    # stays partially loaded, which is why it must NOT set this edge.)
+    return_idx = boundary.terminal_run_hi
+    while return_idx + 1 < hi and d1[return_idx + 1] > inner:
+        return_idx += 1
+
+    if settings.detector == "find_peaks":
+        ruptures = detect_ruptures_findpeaks(
+            d1, height=inner, prominence=settings.prominence,
+            distance_pts=settings.distance_pts, lo=onset_idx, hi=return_idx + 1,
+        )
+    else:
+        ruptures = detect_ruptures_threshold(
+            d1, threshold=inner, lo=onset_idx, hi=return_idx + 1,
+        )
+    if not ruptures:
+        return None
+    for r in ruptures:
+        r.piezo_nm = float(piezo[r.idx])
+    return ROI(
+        onset_idx=onset_idx, return_idx=return_idx,
+        onset_piezo_nm=float(piezo[onset_idx]),
+        return_piezo_nm=float(piezo[return_idx]),
+        ruptures=ruptures,
+        segments=_segments_from_ruptures(onset_idx, ruptures, piezo),
+    )
+
+
 def build_curve_events(
-    d1:              np.ndarray,
-    level:        np.ndarray,
-    piezo:           np.ndarray,
-    *,
-    lo:              int,
-    hi:              int,
-    onset_thr:       float,
-    detector:        str = "d1_threshold",
-    outer_threshold: float = 0.2,
-    inner_threshold: float | None = None,
-    prominence:      float = 0.1,
-    distance_pts:    int   = 25,
-    outer_events:    list[OuterEventBoundary] | None = None,
+    sigs,
+    band:         tuple[int, int],
+    settings:     DetectorSettings,
+    outer_events: list[OuterEventBoundary] | None = None,
 ) -> CurveEvents:
     """
     Assemble the full ROI/rupture/segment geometry for one curve.
 
-    [lo, hi) is the searchable band (post-snapoff mask → anchor), computed by the
-    caller exactly as find_rupture does today.  `detector` selects which d1
-    detector runs INSIDE each ROI ('d1_threshold' or 'find_peaks').
+    `sigs` is anything with .d1 .low .piezo.  `band` = (lo, hi) is the
+    searchable band [lo, hi) (post-snapoff mask → anchor), computed by the
+    caller exactly as find_rupture does today.  `settings.detector` selects
+    which d1 detector runs INSIDE each ROI ('d1_threshold' or 'find_peaks').
 
     Two-tier thresholds as a RIGHT→LEFT state machine — outer and inner never
     compete because they act in different states:
@@ -625,49 +672,20 @@ def build_curve_events(
     inner_threshold defaults to outer_threshold (single-tier) when None.
     Forces and WLC fits are left None — this is pure geometry.
     """
-    outer = float(outer_threshold)
-    inner = float(inner_threshold) if inner_threshold is not None else outer
-    events = CurveEvents(detector=detector)
-    lo = max(0, lo)
-    hi = min(len(d1), hi)
+    outer = float(settings.outer_threshold)
+    inner = (float(settings.inner_threshold)
+             if settings.inner_threshold is not None else outer)
+    events = CurveEvents(detector=settings.detector)
+    lo = max(0, band[0])
+    hi = min(len(sigs.d1), band[1])
 
     boundaries = outer_events if outer_events is not None else find_outer_events(
-        d1, level, piezo, lo=lo, hi=hi, onset_thr=onset_thr,
-        outer_threshold=outer,
+        sigs, (lo, hi), settings.onset_thr, outer,
     )
     for boundary in boundaries:
-        onset_idx = boundary.onset_idx
-
-        # Outer-ROI RIGHT edge = the terminal's OWN d1 excursion end.  Walk right
-        # from the outer run only while d1 stays above INNER, then stop at the gap.
-        # A feature further baseline-ward that never crosses OUTER (a weak post-
-        # event bump) is separated by a d1<inner gap, so it is NOT enclosed and
-        # cannot become an event — only an OUTER crossing opens/bounds an ROI.
-        # (level's baseline return can lag far past the terminal when the tip
-        # stays partially loaded, which is why it must NOT set this edge.)
-        return_idx = boundary.terminal_run_hi
-        while return_idx + 1 < hi and d1[return_idx + 1] > inner:
-            return_idx += 1
-
-        if detector == "find_peaks":
-            ruptures = detect_ruptures_findpeaks(
-                d1, height=inner, prominence=prominence,
-                distance_pts=distance_pts, lo=onset_idx, hi=return_idx + 1,
-            )
-        else:
-            ruptures = detect_ruptures_threshold(
-                d1, threshold=inner, lo=onset_idx, hi=return_idx + 1,
-            )
-        if ruptures:
-            for r in ruptures:
-                r.piezo_nm = float(piezo[r.idx])
-            events.rois.append(ROI(
-                onset_idx=onset_idx, return_idx=return_idx,
-                onset_piezo_nm=float(piezo[onset_idx]),
-                return_piezo_nm=float(piezo[return_idx]),
-                ruptures=ruptures,
-                segments=_segments_from_ruptures(onset_idx, ruptures, piezo),
-            ))
+        roi = _roi_for_boundary(sigs, boundary, hi, inner, settings)
+        if roi is not None:
+            events.rois.append(roi)
 
     return events
 

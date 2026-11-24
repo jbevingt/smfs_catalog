@@ -308,14 +308,15 @@ def _band_for(sigs, si: int, ep: EventParams, stage1):
 
 
 def _built_events(sigs, band, ep: EventParams, stage1):
-    from .roi_events import build_curve_events
+    from .roi_events import DetectorSettings, build_curve_events
 
-    return build_curve_events(
-        sigs.d1, sigs.low, sigs.piezo,
-        lo=band[0], hi=band[1],
+    settings = DetectorSettings(
         onset_thr=ep.onset_thr, detector=ep.detector,
         outer_threshold=ep.d1_threshold, inner_threshold=ep.inner_threshold,
         prominence=ep.prominence, distance_pts=ep.distance_pts,
+    )
+    return build_curve_events(
+        sigs, band, settings,
         outer_events=(stage1.outer_events if stage1 is not None else None),
     )
 
