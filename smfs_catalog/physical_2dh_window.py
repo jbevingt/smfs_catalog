@@ -306,6 +306,7 @@ class Physical2DHWindow(_TwoDHWindowBase):
         """Open the Gaussian-ridge/WLC view on the selected 2DH area, or on the
         full displayed 2DH when no area is selected."""
         from .mean_curve_window import MeanCurveWindow
+        from .plot_context import AxisLabels, ExportContext, HistView
 
         if self._cumulative is None:
             return
@@ -334,25 +335,16 @@ class Physical2DHWindow(_TwoDHWindowBase):
                 f_range = (self._f_min + fi_lo * df, self._f_min + fi_hi * df)
                 title   = f"Selection-window 2DH  (n={n})"
 
-        display = np.sqrt(counts)
         x_label, f_label = self._axis_labels()
         win = MeanCurveWindow(
-            title    = title,
-            display  = display,
-            counts   = counts,
-            auto_max = max(float(display.max()), 1e-10),
-            z_pct    = self._z_pct,
-            lut      = self._lut,
-            x_range  = x_range,
-            f_range  = f_range,
-            x_label  = x_label,
-            f_label  = f_label,
-            caption  = self._provenance_caption(),
-            physical = True,
-            paths      = list(self._event_histograms.keys()),
-            overlay_fn = self._overlay_xF,
-            db_path    = self._db_path,
-            provenance = self.export_provenance(),
+            title,
+            HistView(counts, max(float(np.sqrt(counts).max()), 1e-10),
+                     self._z_pct, self._lut, x_range, f_range),
+            AxisLabels(x_label, f_label),
+            ExportContext(
+                self._provenance_caption(), self.export_provenance(),
+                list(self._event_histograms.keys()), self._db_path, True,
+                self._overlay_xF),
         )
         self._mean_wins.append(win)
         win.show()

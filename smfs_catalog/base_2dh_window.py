@@ -58,6 +58,7 @@ from . import export_utils as _export
 from . import ledger as _ledger
 from .db import write_event_histograms_bulk
 from .event_processor import HistGrid
+from .plot_context import AxisLabels, ExportContext
 from .curve_loader import LoadError, load_force_curve
 from . import style
 from .qt_utils import (
@@ -1050,9 +1051,7 @@ class _TwoDHWindowBase(QMainWindow):
         f_bins          = self._f_bins
         x_range         = (self._x_min, self._x_max)
         f_range         = (self._f_min, self._f_max)
-        display_hists   = None
-        display_x_range = None
-        display_f_range = None
+        display         = None
         feature_space_selected = False
 
         if self._selection is not None:
@@ -1077,9 +1076,7 @@ class _TwoDHWindowBase(QMainWindow):
                     p: H[xi_lo:xi_hi, fi_lo:fi_hi]
                     for p, H in self._event_histograms.items()
                 }
-                display_hists   = dict(self._event_histograms)
-                display_x_range = (self._x_min, self._x_max)
-                display_f_range = (self._f_min, self._f_max)
+                display = (dict(self._event_histograms), self._hist_grid)
 
         (x_label, x_unit), (f_label, f_unit) = self._axis_labels()
         provenance = dict(self.export_provenance())
@@ -1111,23 +1108,12 @@ class _TwoDHWindowBase(QMainWindow):
                 f"   ·   {f_label}: {f_range[0]:g}–{f_range[1]:g} {f_unit}"
             )
         self._pca_win = PCAWindow(
-            histograms         = pca_histograms,
-            x_bins              = x_bins,
-            f_bins              = f_bins,
-            x_range             = x_range,
-            f_range             = f_range,
-            x_label             = x_label,
-            f_label             = f_label,
-            x_unit              = x_unit,
-            f_unit              = f_unit,
-            caption             = caption,
-            provenance          = provenance,
-            db_path             = self._db_path,
-            display_histograms  = display_hists,
-            display_x_range     = display_x_range,
-            display_f_range     = display_f_range,
-            physical            = self._physical,
-            overlay_fn          = self._overlay_xF,
+            pca_histograms,
+            HistGrid(x_bins, f_bins, x_range, f_range),
+            AxisLabels(x_label, f_label, x_unit, f_unit),
+            ExportContext(caption, provenance, None, self._db_path,
+                          self._physical, self._overlay_xF),
+            display,
         )
         self._pca_win.show()
 

@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 
 import numpy as np
 from scipy import optimize
@@ -70,6 +71,7 @@ from .dist_fit_core import (
     flatten_constraints,
 )
 from . import dist_fit_core as _dfc
+from .plot_context import FitContext
 from .qt_utils import CancelableProgress, set_plot_title, set_si_label, fit_on_screen, report_handled, signals_blocked
 
 
@@ -662,18 +664,15 @@ class _ModelPane(QWidget):
         plot_pane:     _PlotPane,
         variable:      str,
         units:         str,
-        db_path:       str,
+        context:       FitContext,
         parent=None,
-        paths:         list[str] | None = None,
-        caption:       str = "",
     ):
         super().__init__(parent)
         self._plot     = plot_pane
         self._variable = variable
         self._units    = units
-        self._db_path  = db_path
-        self._paths    = list(paths) if paths else []
-        self._caption  = caption
+        self._context  = replace(
+            context, paths=list(context.paths) if context.paths else [])
         self._rows:     list[PeakRow] = []
         self._last_fit: dict          = {}
         self._pick_row: PeakRow | None = None
@@ -1377,7 +1376,7 @@ class _ModelPane(QWidget):
     def _load_saved_fits(self):
         """Pre-populate comparison table with fits saved to DB for this variable."""
         try:
-            rows = _db.get_distribution_fits(self._variable, self._db_path)
+            rows = _db.get_distribution_fits(self._variable, self._context.db_path)
             for row in rows:
                 gof = json.loads(row["gof_json"])
                 self._fit_history.append({
@@ -1425,7 +1424,7 @@ class _ModelPane(QWidget):
             "constrained":         bool(f.get("constrained", False)),
             "n_params_at_user_bound": sum(
                 1 for s in (f.get("at_user_bound") or []) if s is not None),
-            "caption":     self._caption,
+            "caption":     self._context.caption,
         }
 
     def _export_fit(self):
@@ -1445,10 +1444,10 @@ class _ModelPane(QWidget):
         parts = ["_params.csv", "_histogram.csv", "_curve.csv"]
         stem  = f"fit_{_slug(self._variable)}"
         with _export.export_group(
-            self._db_path, stem, parts, kind="distribution_fit",
+            self._context.db_path, stem, parts, kind="distribution_fit",
         ) as g:
             g.contributing_files([
-                path for path, keep in zip(self._paths, self._plot.fit_mask) if keep
+                path for path, keep in zip(self._context.paths, self._plot.fit_mask) if keep
             ])
             g.note_dict(self.export_provenance())
             g.note(goodness_of_fit=f["gof"],
@@ -1551,7 +1550,7 @@ class _ModelPane(QWidget):
                     gof_json=gof_json,
                     fit_config_json=fit_config_json,
                 ),
-                self._db_path,
+                self._context.db_path,
             )
         except Exception as exc:
             QMessageBox.critical(self, "Save failed", str(exc))
@@ -1628,8 +1627,8 @@ class DistFitWindow(QMainWindow):
 
         self._plot_pane  = _PlotPane(pass_values, variable_name, units, caption=caption)
         self._model_pane = _ModelPane(
-            self._plot_pane, variable_name, units, db_path,
-            paths=self._paths, caption=caption,
+            self._plot_pane, variable_name, units,
+            FitContext(db_path, self._paths, caption),
         )
 
         splitter.addWidget(self._plot_pane)
