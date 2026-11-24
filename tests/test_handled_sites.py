@@ -83,17 +83,43 @@ def _calls(handler: ast.ExceptHandler, name: str) -> list[ast.Call]:
             if isinstance(n, ast.Call) and _call_name(n) == name]
 
 
-def _assert_reports_to(handler, setter: str) -> None:
-    """Handler binds the exception and report_handled's first arg is `setter`."""
+def _local_callable(handler, node):
+    """The nested `def` (by name) or Lambda that a report_handled `show` arg is."""
+    if isinstance(node, ast.Lambda):
+        return node
+    if isinstance(node, ast.Name):
+        for n in ast.walk(handler):
+            if isinstance(n, ast.FunctionDef) and n.name == node.id:
+                return n
+    return None
+
+
+def _calls_setter(tree, setter: str) -> bool:
+    return any(isinstance(n, ast.Call) and _dotted(n.func) == setter
+               for n in ast.walk(tree))
+
+
+def _assert_reports_to(handler, setter: str, function=None) -> None:
+    """Handler binds the exception and gives report_handled the bound exception;
+    the `show` argument is the literal `setter`, or a local callable that calls
+    it.  When the local callable only records the text (the dashboard's child
+    errors, shown after the loop) pass `function`: it must call `setter`."""
     assert handler.name, "handler must bind the exception (`as exc`)"
     calls = _calls(handler, "report_handled")
     assert calls, "handler must call report_handled"
     call = calls[0]
-    assert _dotted(call.args[0]) == setter, _dotted(call.args[0])
     assert len(call.args) >= 3, "report_handled(show, context, exc)"
     last = call.args[2]
     assert isinstance(last, ast.Name) and last.id == handler.name, \
         "report_handled must be given the bound exception"
+    show = call.args[0]
+    if _dotted(show) == setter:
+        return
+    local = _local_callable(handler, show)
+    assert local is not None, \
+        f"show must be {setter} or a local callable, got {ast.unparse(show)}"
+    target = function if function is not None else local
+    assert _calls_setter(target, setter), f"{setter} is never called by the show path"
 
 
 # (module, function, marker in the try body, setter text, what "carry on" looks like)
@@ -107,7 +133,7 @@ SURFACE_SITES = [
     ("decomposition_window", "_sync_profile_owner", "active_param_owner",
      "self._context_label.setText"),
     ("display_roi", "_sync_profile_owner", "active_param_owner",
-     "self._status_label.setText"),
+     "self._params_label.setText"),
     ("display_roi", "update_curve", "load_force_curve",
      "self._status_label.setText"),
     ("display_roi", "_recompute_and_draw", "compute_curve_events_coords",
@@ -135,7 +161,10 @@ SURFACE_SITES = [
     "module,func,marker,setter", SURFACE_SITES,
     ids=[f"{m}.{f}[{k}]" for m, f, k, _ in SURFACE_SITES])
 def test_handler_reports_to_its_widget(module, func, marker, setter):
-    _assert_reports_to(_handler(module, func, marker), setter)
+    # The child-scope handler only records the text; the function writes it after the loop.
+    whole = (_function(module, func)
+             if (module, func) == ("dashboard_window", "_on_scope_edit") else None)
+    _assert_reports_to(_handler(module, func, marker), setter, whole)
 
 
 @pytest.mark.parametrize("func,marker", [
@@ -284,7 +313,7 @@ def test_nav_load_failure_shown_clears_and_does_not_update(monkeypatch):
 def test_sync_profile_owner_failure_shown_in_each_window(monkeypatch):
     for mod, cls, attr in ((dw, dw.DecompositionWindow, "_context_label"),
                            (roi, roi.DisplayROI if hasattr(roi, "DisplayROI") else None,
-                            "_status_label")):
+                            "_params_label")):
         if cls is None:
             cls = next(v for v in vars(roi).values()
                        if isinstance(v, type) and "_sync_profile_owner" in vars(v))

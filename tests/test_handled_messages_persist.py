@@ -371,3 +371,35 @@ def test_saved_message_is_in_the_success_colour_after_a_failure(monkeypatch):
     assert _colour_in(lbl.qss, style.TEXT_GOOD), lbl.qss
     assert not _colour_in(lbl.qss, style.TEXT_BAD), lbl.qss
     assert not _colour_in(lbl.qss, style.TEXT_WARNING), lbl.qss
+
+
+class _Prog:
+    cancelled = False
+
+    def __init__(self, *_a, **_k): pass
+    def tick(self, *_a): pass
+    def close(self): pass
+
+
+def _bootstrap_probe(monkeypatch, boot):
+    monkeypatch.setattr(dfw, "CancelableProgress", _Prog)
+    monkeypatch.setattr(dfw, "bootstrap_fit_ci", lambda *_a, **_k: boot)
+    monkeypatch.setattr(dfw._db, "get_distribution_fits", _boom)
+    p, lbl = _fit_probe()
+    p._plot = SimpleNamespace(edges=None, normalized=False)
+    dfw._ModelPane._load_saved_fits(p)
+    assert _colour_in(lbl.qss, style.TEXT_BAD), "precondition: failure is red"
+    return p, lbl
+
+
+@pytest.mark.parametrize("boot,expected", [
+    (None, "No confidence interval"),
+    (SimpleNamespace(n_failed=3, n_draws=10, n_ok=7), "did not converge"),
+], ids=["no-interval", "some-did-not-converge"])
+def test_non_failure_message_after_a_load_failure_is_in_the_success_colour(
+        monkeypatch, boot, expected):
+    p, lbl = _bootstrap_probe(monkeypatch, boot)
+    dfw._ModelPane._run_bootstrap(p, [], [], [], [], [])
+    assert expected in lbl.text, lbl.text
+    assert _colour_in(lbl.qss, style.TEXT_GOOD), lbl.qss
+    assert not _colour_in(lbl.qss, style.TEXT_BAD), lbl.qss
