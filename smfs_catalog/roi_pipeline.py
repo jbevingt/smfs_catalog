@@ -32,7 +32,7 @@ from dataclasses import dataclass, asdict
 
 from . import db as _db
 from .analysis_params import AnalysisParams
-from .curve_analysis import CacheContext
+from .curve_analysis import CacheContext, cache_get, cache_put_multi, can_use_cache
 from .curve_loader import LoadError, load_force_curve
 from .models import CHAIN_MODEL_BY_IDX
 from .muggeo_segmented import RESTARTS as MUGGEO_RESTARTS
@@ -207,16 +207,11 @@ def compute_curve_events(
     ).events
 
 
-def _can_read_cache(cache: CacheContext | None) -> bool:
-    return (cache is not None and cache.db_path is not None
-            and cache.code_ver is not None and cache.file_id is not None)
-
-
 def _scalar_keys(cache: CacheContext | None):
     # THE canonical key-builder for these rows (curve_analysis.pipeline_params_from)
     # — reused rather than hand-rebuilt, so this can never drift from the keys
     # analyse_curve actually wrote under.
-    if _can_read_cache(cache) and cache.param_set is not None:
+    if can_use_cache(cache) and cache.param_set is not None:
         from .curve_analysis import pipeline_params_from
         return pipeline_params_from(cache.param_set)
     return None
@@ -226,19 +221,13 @@ def _cached_scalar(cache: CacheContext | None, atype: str, key_field: str):
     keys = _scalar_keys(cache)
     if keys is None:
         return None
-    return _db.get_analysis_result(
-        cache.file_id, atype, getattr(keys, key_field), cache.code_ver,
-        cache.db_path, conn=cache.conn,
-    )
+    return cache_get(cache, atype, getattr(keys, key_field))
 
 
 def _store_scalars(cache: CacheContext | None, key_field: str, values: dict) -> None:
     keys = _scalar_keys(cache)
     if keys is not None:
-        _db.write_analysis_results_multi(
-            cache.file_id, values, getattr(keys, key_field), cache.code_ver,
-            cache.db_path, conn=cache.conn,
-        )
+        cache_put_multi(cache, values, getattr(keys, key_field))
 
 
 def _cached_events(ep: EventParams, cache: CacheContext | None, force: bool):
@@ -250,7 +239,7 @@ def _cached_events(ep: EventParams, cache: CacheContext | None, force: bool):
     """
     from .roi_events import payload_to_events
 
-    if force or not _can_read_cache(cache):
+    if force or not can_use_cache(cache):
         return None
     doc = _db.get_event_map(
         cache.file_id, event_map_params_json(ep), cache.code_ver, cache.db_path,
@@ -370,7 +359,7 @@ def _fit_and_store(curve, events, ep: EventParams, calib, cache: CacheContext | 
     from .roi_events import fit_segments, events_to_payload
 
     fit_segments(curve, events, calib, ep.fit_settings())
-    if _can_read_cache(cache):
+    if can_use_cache(cache):
         _db.write_event_map(
             cache.file_id, json.dumps(events_to_payload(events)),
             event_map_params_json(ep), cache.code_ver, cache.db_path,

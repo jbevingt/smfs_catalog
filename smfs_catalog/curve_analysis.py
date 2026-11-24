@@ -312,33 +312,34 @@ class _Roi(NamedTuple):
 # the same value around the same time, the write is a replace rather than an
 # append, so a redundant write remains safe. Display-only windows must read
 # these results instead of becoming additional analysis producers.
-def _can_cache(cache: CacheContext | None) -> bool:
+def can_use_cache(cache: CacheContext | None) -> bool:
+    """The one rule for when a CacheContext may be read or written: it exists and db_path, code_ver and file_id are all set."""
     return (cache is not None and cache.db_path is not None
             and cache.code_ver is not None and cache.file_id is not None)
 
 
-def _cache_get(cache: CacheContext | None, atype: str, params: str):
-    if not _can_cache(cache):
+def cache_get(cache: CacheContext | None, atype: str, params: str):
+    if not can_use_cache(cache):
         return None
     return _db.get_analysis_result(cache.file_id, atype, params, cache.code_ver,
                                   cache.db_path, conn=cache.conn)
 
 
 def _cache_put(cache: CacheContext | None, atype: str, value: float, params: str) -> None:
-    if _can_cache(cache):
+    if can_use_cache(cache):
         _db.write_analysis_result(cache.file_id, atype, value, params, cache.code_ver,
                                   cache.db_path, conn=cache.conn)
 
 
 def _cache_get_multi(cache: CacheContext | None, atypes, params: str) -> dict:
-    if not _can_cache(cache):
+    if not can_use_cache(cache):
         return {}
     return _db.get_analysis_results_multi(cache.file_id, atypes, params, cache.code_ver,
                                          cache.db_path, conn=cache.conn)
 
 
-def _cache_put_multi(cache: CacheContext | None, values: dict, params: str) -> None:
-    if _can_cache(cache):
+def cache_put_multi(cache: CacheContext | None, values: dict, params: str) -> None:
+    if can_use_cache(cache):
         _db.write_analysis_results_multi(cache.file_id, values, params, cache.code_ver,
                                         cache.db_path, conn=cache.conn)
 
@@ -415,7 +416,7 @@ def _baseline_stage(curve, p, cache: CacheContext | None) -> _Baseline:
         )
     bl = _fit_baseline(curve, p)
     if not np.isnan(bl.offset):
-        _cache_put_multi(cache, {
+        cache_put_multi(cache, {
             "offset_retr":         bl.offset,
             "flatness_slope":      bl.flatness,
             "baseline_intercept":  float(bl.intercept),
@@ -465,7 +466,7 @@ def _invols_stage(curve, p, cache: CacheContext | None) -> _Invols:
             int(cached["invols_fit_hi_idx"]), None,
         )
     iol = _fit_invols(curve, p)
-    _cache_put_multi(cache, {
+    cache_put_multi(cache, {
         "invols_slope":      float(iol.slope),
         "invols_intercept":  float(iol.intercept),
         "invols_rms":        float(iol.rms),
@@ -504,8 +505,8 @@ def _contact_stage(curve, p, cache: CacheContext | None, dc) -> _Contact:
     DecomposedCurve is a new object (Stage1Search.dc identity changes). This
     is long-standing behaviour and is deliberately preserved.
     """
-    contact_z = _cache_get(cache, "contact_piezo_nm", p.params_cd)
-    snapoff_z = _cache_get(cache, "snapoff_piezo_nm", p.params_cd)
+    contact_z = cache_get(cache, "contact_piezo_nm", p.params_cd)
+    snapoff_z = cache_get(cache, "snapoff_piezo_nm", p.params_cd)
     if contact_z is None or snapoff_z is None:
         ct = _fit_contact(curve, p)
         if not np.isnan(ct.contact_z):
@@ -517,7 +518,7 @@ def _contact_stage(curve, p, cache: CacheContext | None, dc) -> _Contact:
     # Values hit cache, but the INDEX wasn't necessarily remembered from a
     # prior pass — recover it so the ROI stage doesn't have to re-run
     # find_end_in_contact just to get back an index we already have.
-    snap_idx = _cache_get(cache, "snapoff_idx", p.params_cd)
+    snap_idx = cache_get(cache, "snapoff_idx", p.params_cd)
     return _Contact(float(contact_z), float(snapoff_z),
                     None if snap_idx is None else int(snap_idx), dc)
 
@@ -572,15 +573,15 @@ def _roi_stage(curve, p, cache: CacheContext | None, offset: float, ct: _Contact
     force belongs to downstream per-segment characterization and is never
     computed here.
     """
-    rupture_z = _cache_get(cache, "rupture_piezo_nm", p.params_roi)
-    onset_z   = _cache_get(cache, "onset_piezo_nm",   p.params_roi)
+    rupture_z = cache_get(cache, "rupture_piezo_nm", p.params_roi)
+    onset_z   = cache_get(cache, "onset_piezo_nm",   p.params_roi)
     if rupture_z is None or onset_z is None:
         return _fresh_roi(curve, p, offset, ct.snap_idx, ct.dc)
     # Same recovery as snap-off: the piezo-nm values hit cache, but pull the
     # indices back too so same-pass multi-event characterization does not have
     # to re-derive them from the curve.
-    rup_idx = _cache_get(cache, "rupture_idx", p.params_roi)
-    ons_idx = _cache_get(cache, "onset_idx",   p.params_roi)
+    rup_idx = cache_get(cache, "rupture_idx", p.params_roi)
+    ons_idx = cache_get(cache, "onset_idx",   p.params_roi)
     return _Roi(float(rupture_z), float(onset_z),
                 None if rup_idx is None else int(rup_idx),
                 None if ons_idx is None else int(ons_idx),
@@ -645,7 +646,7 @@ def analyse_curve(
     computed per segment downstream by the segmentation stage
     (roi_events.fit_segments, reached via _persist_multi_event_roi).
 
-    Caching is optional and follows the write policy above _can_cache.
+    Caching is optional and follows the write policy above can_use_cache.
     """
     # Only p.anchor_nm / p.params_bl are read before the baseline (checked by
     # test_curve_analysis_contract).
