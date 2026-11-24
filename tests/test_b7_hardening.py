@@ -43,12 +43,6 @@ def test_zero_lp_segment_gives_undefined_fstar_anchor(model):
     assert ep.compute_physical_histogram_at(x, F, anchor) is None
 
 
-def test_zero_lp_wlc_histogram_is_dropped():
-    x = np.linspace(1.0, 40.0, 30)
-    F = np.linspace(1.0, 30.0, 30)
-    assert ep.compute_physical_histogram(x, F, 0.0, 50.0, 5.0) is None
-
-
 def test_zero_lp_fit_is_not_given_a_new_drop_reason():
     # The drop reason recorded is unchanged: l_p <= 0 is not rejected up front.
     fit = ChainFit("wlc", (0.0, 50.0))

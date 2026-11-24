@@ -143,8 +143,19 @@ def test_handler_reports_to_its_widget(module, func, marker, setter):
     ("_refresh_population_children", "reload_paths"),
 ])
 def test_dashboard_child_handlers_name_the_child_window(func, marker):
+    # b7: the title is read into a local before the try (a destroyed child's
+    # windowTitle() would raise inside the handler); the context uses that local.
+    fn = _function("dashboard_window", func)
     h = _handler("dashboard_window", func, marker)
-    assert _calls(h, "windowTitle"), "context must include the child's windowTitle()"
+    assert not _calls(h, "windowTitle"), "windowTitle() must not be called in the handler"
+    titles = {t.id for n in ast.walk(fn) if isinstance(n, ast.Assign)
+              and any(_call_name(c) == "windowTitle"
+                      for c in ast.walk(n.value) if isinstance(c, ast.Call))
+              for t in n.targets if isinstance(t, ast.Name)}
+    assert titles, "windowTitle() must be read into a local before the try"
+    context = _calls(h, "report_handled")[0].args[1]
+    used = {n.id for n in ast.walk(context) if isinstance(n, ast.Name)}
+    assert used & titles, "context must include the child's title"
 
 
 # Fallbacks that must survive ("otherwise carry on as today").
