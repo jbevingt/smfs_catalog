@@ -50,19 +50,19 @@ from smfs_catalog.dist_fit_core import (
 
 def _manifest(pcov, band_drawn, **settings):
     """ci_manifest_fields with settings given by name (method/n_draws/pct/seed)."""
-    return ci_manifest_fields(pcov, band_drawn, **settings)
+    return ci_manifest_fields(pcov, band_drawn, core.CiSettings(**settings))
 
 
 def _total(fn, x, popt, pcov, **settings):
     """total_fit_ci with settings given by name (n_draws/pct/seed)."""
-    return total_fit_ci(fn, x, popt, pcov, **settings)
+    return total_fit_ci(fn, x, popt, pcov, core.CiSettings(**settings))
 
 
 def _bootstrap(components, data, edges, normalize, popt, bounds, x_fine=None,
                progress=None, **settings):
     """bootstrap_fit_ci with settings given by name (n_draws/pct/seed)."""
     return bootstrap_fit_ci(components, data, edges, normalize, popt, bounds,
-                            x_fine, progress=progress, **settings)
+                            x_fine, core.CiSettings(**settings), progress)
 
 
 # ---- 1. interface -------------------------------------------------------------
