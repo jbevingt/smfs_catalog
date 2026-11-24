@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QApplication, QLabel, QProgressDialog, QScrollArea, QSizePolicy, QWidget,
 )
 
+from contextlib import contextmanager
 import datetime
 import pyqtgraph as pg
 
@@ -32,6 +33,16 @@ from .style import (
 # ── Small UI constants ────────────────────────────────────────────────────────
 
 _SMALL_FONT_PT = FONT_CAPTION_PT
+
+
+@contextmanager
+def signals_blocked(*widgets):
+    prev = [w.blockSignals(True) for w in widgets]
+    try:
+        yield
+    finally:
+        for w, p in zip(widgets, prev):
+            w.blockSignals(p)
 
 
 class FixedDomainPlot(pg.PlotWidget):
