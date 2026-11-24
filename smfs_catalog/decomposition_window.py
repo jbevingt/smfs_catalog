@@ -1023,7 +1023,7 @@ class DecompositionWindow(QWidget):
         # own, unconditionally, whenever it can identify the file.
         try:
             from dataclasses import replace
-            from .curve_analysis import analyse_curve, pipeline_params_from
+            from .curve_analysis import CacheContext, analyse_curve, pipeline_params_from
             snapshot = _db.load_analysis_params(self._db_path)
             preview = replace(
                 snapshot,
@@ -1040,7 +1040,7 @@ class DecompositionWindow(QWidget):
             file_id = _db.get_file_id(curve.path, self._db_path)
             result, stage1 = analyse_curve(
                 curve, live_params,
-                db_path=self._db_path, code_ver=cache_version(), file_id=file_id,
+                cache=CacheContext(self._db_path, cache_version(), file_id, None),
             )
         except Exception as exc:
             result, stage1 = None, None
