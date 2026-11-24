@@ -17,7 +17,7 @@ def catalog(tmp_path):
 
 
 def add_files(catalog, n):
-    """Insert n file rows (file_000.ibw ... ) and return their paths."""
+    """Insert n file rows (file_000.ibw ... ) and return their paths as stored (normalised)."""
     paths = []
     for i in range(n):
         path = f"/data/session/file_{i:03d}.ibw"
@@ -27,5 +27,5 @@ def add_files(catalog, n):
              "last_seen": "2026-01-01T00:00:00"},
             catalog,
         )
-        paths.append(path)
+        paths.append(db.normalize_path(path))
     return paths
