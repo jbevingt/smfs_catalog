@@ -65,7 +65,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from .curve_loader import ForceCurve, LoadError, load_force_curve
+from .curve_loader import ForceCurve, load_force_curve
 from . import db as _db
 from . import quantities as _quant
 from .models import CHAIN_MODEL_BY_IDX, CHAIN_MODELS
@@ -80,7 +80,7 @@ from .roi_pipeline import (
 )
 from . import sample_marks
 from . import style
-from .qt_utils import _make_session_header, set_si_label, fit_on_screen, signals_blocked
+from .qt_utils import _make_session_header, set_si_label, fit_on_screen, report_handled, signals_blocked
 from .widgets import FlowLayout, LabeledControl, SampleMarksToggle
 from .navigator_bar import WorkerNavBar
 from .provenance import cache_version
@@ -602,8 +602,9 @@ class ROIWindow(QWidget):
         self._sync_profile_owner(path)
         try:
             curve: ForceCurve = load_force_curve(path)
-        except (LoadError, Exception):
+        except Exception as exc:
             self._clear()
+            report_handled(self._status_label.setText, "Loading curve", exc)
             return
 
         self._last_curve = curve
@@ -693,15 +694,8 @@ class ROIWindow(QWidget):
                 param_set=committed,
             )
         except Exception as exc:
-            import sys
-            print(
-                f"[roi] computation failed — {type(exc).__name__}: {str(exc)[:160]}",
-                file=sys.stderr,
-            )
             self._clear()
-            self._status_label.setText(
-                f"ROI calculation failed: {type(exc).__name__}: {str(exc)[:120]}"
-            )
+            report_handled(self._status_label.setText, "ROI calculation", exc)
             return
 
         sigs, events, snapoff_idx = res.sigs, res.events, res.snapoff_idx
@@ -1015,7 +1009,8 @@ class ROIWindow(QWidget):
         """
         try:
             owner = _db.active_param_owner(self._db_path)
-        except Exception:
+        except Exception as exc:
+            report_handled(self._status_label.setText, "Parameter owner lookup", exc)
             return
         if self._owner_synced and owner == self._experimentalist:
             return

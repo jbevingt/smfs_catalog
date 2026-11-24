@@ -54,7 +54,7 @@ from . import sample_marks
 from . import style
 from .widgets import SampleMarksToggle
 from .navigation import build_go_to_row
-from .qt_utils import _make_session_header, set_si_label, fit_on_screen, signals_blocked
+from .qt_utils import _make_session_header, set_si_label, fit_on_screen, report_handled, signals_blocked
 from . import quantities as _quant
 # This window drives its OWN QTimer over its own curve list — it is not the
 # analysis worker's playhead, so it shares navigator_bar's slider maths but
@@ -628,8 +628,8 @@ class WlcViewWindow(QMainWindow):
                 file_id=file_id, param_set=param_set,
             )
             events, offset, inv, snap = res.events, res.offset, res.invols, res.snap_piezo
-        except Exception:
-            self._top.setTitle("Multi-event computation failed")
+        except Exception as exc:
+            report_handled(self._top.setTitle, "Multi-event computation", exc)
             return
         if not events.rois:
             self._top.setTitle("No ROI found — analyse / adjust thresholds")

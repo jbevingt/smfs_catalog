@@ -36,6 +36,7 @@ from . import style
 from .qt_utils import (
     _make_session_header,
     fit_on_screen,
+    report_handled,
     set_si_label,
     shrinkable,
     signals_blocked,
@@ -863,7 +864,8 @@ class DecompositionWindow(QWidget):
         """
         try:
             owner = _db.active_param_owner(self._db_path)
-        except Exception:
+        except Exception as exc:
+            report_handled(self._context_label.setText, "Parameter owner lookup", exc)
             return
         if self._owner_synced and owner == self._experimentalist:
             return
@@ -976,8 +978,9 @@ class DecompositionWindow(QWidget):
         try:
             from .signal_processing import decompose_curve, _moving_variance, _ms_to_pts
             dc = decompose_curve(curve, cutoff_hz=float(self._cutoff_hz))
-        except Exception:
+        except Exception as exc:
             self._clear()
+            report_handled(self._context_label.setText, "Decomposition", exc)
             return
 
         n_appr        = len(dc.low_appr)
@@ -1034,8 +1037,9 @@ class DecompositionWindow(QWidget):
                 curve, live_params,
                 db_path=self._db_path, code_ver=cache_version(), file_id=file_id,
             )
-        except Exception:
+        except Exception as exc:
             result, stage1 = None, None
+            report_handled(self._context_label.setText, "Curve analysis", exc)
 
         # ── Contact detection — marker positions ───────────────────────────────
         if result is not None and not np.isnan(result.contact_z) and not np.isnan(result.snapoff_z):
@@ -1134,8 +1138,9 @@ class DecompositionWindow(QWidget):
         self._sync_profile_owner(path)
         try:
             curve = load_force_curve(path)
-        except Exception:
+        except Exception as exc:
             self._clear()
+            report_handled(self._context_label.setText, "Loading curve", exc)
             return
         self.update_curve(curve)
 

@@ -69,7 +69,7 @@ from .dist_fit_core import (
     flatten_constraints,
 )
 from . import dist_fit_core as _dfc
-from .qt_utils import CancelableProgress, set_plot_title, set_si_label, fit_on_screen, signals_blocked
+from .qt_utils import CancelableProgress, set_plot_title, set_si_label, fit_on_screen, report_handled, signals_blocked
 
 
 PEAK_COLORS = list(style.SERIES_LABELED)
@@ -1385,8 +1385,8 @@ class _ModelPane(QWidget):
                 })
             if self._fit_history:
                 self._update_comparison_table()
-        except Exception:
-            pass
+        except Exception as exc:
+            report_handled(self._save_status.setText, "Loading saved fits", exc)
 
     # ── DB save ───────────────────────────────────────────────────────────────
 

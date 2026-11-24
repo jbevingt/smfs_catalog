@@ -91,7 +91,7 @@ from . import regression as _reg
 from . import variables as _vars
 from .roi_events import LOADING_SLOPE_NOTE
 from .widgets import ClusterColourBar, FlowLayout, LabeledControl, VariableCombo
-from .qt_utils import _DateAxis, _make_session_header, set_si_label, fit_on_screen, signals_blocked
+from .qt_utils import _DateAxis, _make_session_header, set_si_label, fit_on_screen, report_handled, signals_blocked
 from .quantities import format_value as _q   # ONE formatter: unit and
 # meaningful digits come from quantities.py, so the same measurement
 # cannot print as 166, 166.2 and 166.20 in three different windows.
@@ -1789,8 +1789,9 @@ class EventSummaryWindow(QMainWindow):
                     continue
                 try:
                     who = _db.get_experimentalist_for_file(path, self._db_path)
-                except Exception:
+                except Exception as exc:
                     who = None
+                    report_handled(self._warn_label.setText, "Experimentalist lookup", exc)
                 if who:
                     self._experimentalist = who
                 break

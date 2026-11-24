@@ -43,7 +43,7 @@ from .navigator_bar import NavigatorBar
 from .roi_pipeline import (
     read_segment_select, write_segment_select,
 )
-from .qt_utils import fit_on_screen, signals_blocked
+from .qt_utils import fit_on_screen, report_handled, signals_blocked
 
 
 _SELECTION_QSS = style.TABLE_QSS
@@ -1163,7 +1163,8 @@ class DashboardWindow(QMainWindow):
                 date_to=scope.get("date_to"),
                 search=scope.get("search"),
             )
-        except Exception:
+        except Exception as exc:
+            report_handled(self._scope_count_lbl.setText, "Refresh filters", exc)
             return
 
         for key, lst in self._lists.items():
@@ -1207,8 +1208,9 @@ class DashboardWindow(QMainWindow):
             if hasattr(win, "apply_scope") and win.isVisible():
                 try:
                     win.apply_scope(self._scope)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    report_handled(self._scope_count_lbl.setText,
+                                   f"Update {win.windowTitle()}", exc)
 
     def _prune_children(self) -> None:
         """Drop child windows that have been closed or destroyed."""
@@ -1464,7 +1466,8 @@ class DashboardWindow(QMainWindow):
             from .curve_analysis import current_signature
             params_json, code_ver = current_signature(self._db_path)
             return _db.queue_freshness(params_json, code_ver, self._db_path)
-        except Exception:
+        except Exception as exc:
+            report_handled(self._worker_status_lbl.setText, "Queue freshness", exc)
             return {}
 
     def _status_class(self, file_id: int, status: str | None) -> str:
@@ -2151,8 +2154,9 @@ class DashboardWindow(QMainWindow):
                     win.set_event_paths(event_paths)
                 elif hasattr(win, "refresh"):
                     win.refresh()
-            except Exception:
-                pass
+            except Exception as exc:
+                report_handled(self._scope_count_lbl.setText,
+                               f"Update {win.windowTitle()}", exc)
 
 
 def _fmt_cell(val, key: str = "") -> str:
