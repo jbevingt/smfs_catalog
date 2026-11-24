@@ -1206,11 +1206,12 @@ class DashboardWindow(QMainWindow):
         self._prune_children()
         for win in self._children:
             if hasattr(win, "apply_scope") and win.isVisible():
+                title = win.windowTitle()
                 try:
                     win.apply_scope(self._scope)
                 except Exception as exc:
                     report_handled(self._scope_count_lbl.setText,
-                                   f"Update {win.windowTitle()}", exc)
+                                   f"Update {title}", exc)
 
     def _prune_children(self) -> None:
         """Drop child windows that have been closed or destroyed."""
@@ -2143,6 +2144,7 @@ class DashboardWindow(QMainWindow):
         self._prune_children()
         event_paths = None
         for win in self._children:
+            title = win.windowTitle()
             try:
                 if hasattr(win, "reload_paths"):
                     if event_paths is None:
@@ -2156,7 +2158,7 @@ class DashboardWindow(QMainWindow):
                     win.refresh()
             except Exception as exc:
                 report_handled(self._scope_count_lbl.setText,
-                               f"Update {win.windowTitle()}", exc)
+                               f"Update {title}", exc)
 
 
 def _fmt_cell(val, key: str = "") -> str:
