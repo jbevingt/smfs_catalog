@@ -188,11 +188,12 @@ def _analyse(curve, pipeline, cache: Cache | None = None):
 def _compute(curve, ep, *, cache: Cache | None = None,
              stage1=None, force: bool = False):
     from smfs_catalog.roi_pipeline import compute_curve_events_coords
+    from smfs_catalog.curve_analysis import CacheContext
     kw = {"stage1": stage1, "force": force}
     if cache is not None:
-        kw.update(db_path=cache.db_path, code_ver=CODE_VER,
-                  file_id=cache.file_id, param_set=cache.param_set,
-                  conn=cache.conn)
+        kw["cache"] = CacheContext(
+            cache.db_path, CODE_VER, cache.file_id, cache.conn,
+            param_set=cache.param_set)
     return compute_curve_events_coords(curve, ep, **kw)
 
 
