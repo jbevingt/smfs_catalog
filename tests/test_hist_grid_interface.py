@@ -27,7 +27,6 @@ Three layers:
     how the HistGrid is built from the loose values;
   * a size guard on the changed functions.
 """
-import ast
 import dataclasses
 import inspect
 from pathlib import Path
@@ -37,31 +36,32 @@ import pytest
 
 from smfs_catalog import base_2dh_window, event_processor as ep, physical_2dh_window
 from size_limits import violations
+from source_inspect import function_node
 
 PKG = Path(ep.__file__).resolve().parent
 
 
 # ── adapter: takes loose values, builds the HistGrid, calls the d2 API ───────
 
-def _phys_key(f_star, x_bins, f_bins, x_range, f_range, align_mode, align_segment):
-    return ep._phys_grid_params(
-        f_star, ep.HistGrid(x_bins, f_bins, x_range, f_range),
-        align_mode, align_segment)
+def _grid(spec):
+    """spec is the loose (x_bins, f_bins, x_range, f_range) tuple."""
+    return ep.HistGrid(*spec)
 
 
-def _wlc_key(x_bins, f_bins, x_range, f_range, align_segment):
-    return ep._wlc_grid_params(
-        ep.HistGrid(x_bins, f_bins, x_range, f_range), align_segment)
+def _phys_key(f_star, spec, align_mode, align_segment):
+    return ep._phys_grid_params(f_star, _grid(spec), align_mode, align_segment)
 
 
-def _phys_hist(x, F, anchor, x_bins, f_bins, x_range, f_range):
-    return ep.compute_physical_histogram_at(
-        x, F, anchor, ep.HistGrid(x_bins, f_bins, x_range, f_range))
+def _wlc_key(spec, align_segment):
+    return ep._wlc_grid_params(_grid(spec), align_segment)
 
 
-def _wlc_hist(x, F, l_p, l_c, x_bins, f_bins, x_range, f_range):
-    return ep.compute_wlc_histogram(
-        x, F, l_p, l_c, ep.HistGrid(x_bins, f_bins, x_range, f_range))
+def _phys_hist(x, F, anchor, spec):
+    return ep.compute_physical_histogram_at(x, F, anchor, _grid(spec))
+
+
+def _wlc_hist(x, F, l_p, l_c, spec):
+    return ep.compute_wlc_histogram(x, F, l_p, l_c, _grid(spec))
 
 
 # ── interface: HistGrid ──────────────────────────────────────────────────────
@@ -138,28 +138,28 @@ def test_unused_compute_physical_histogram_is_deleted():
 # coerce its fields.
 
 PHYS_KEYS = [
-    ((50.0, 200, 150, (-20, 80), (0, 300), "rupture", "last"),
+    ((50.0, (200, 150, (-20, 80), (0, 300)), "rupture", "last"),
      '{"type":"phys","x_bins":200,"f_bins":150,"x_min":-20,"x_max":80,'
      '"f_min":0,"f_max":300,"F_star_pN":50.0,"align":"rupture","seg":"last","v":4}'),
-    ((50.0, 200, 150, (-20, 80), (0, 300), "fstar", "first"),
+    ((50.0, (200, 150, (-20, 80), (0, 300)), "fstar", "first"),
      '{"type":"phys","x_bins":200,"f_bins":150,"x_min":-20,"x_max":80,'
      '"f_min":0,"f_max":300,"F_star_pN":50.0,"align":"fstar","seg":"first","v":4}'),
-    ((12.5, 64, 32, (-10.5, 40.25), (-5, 120.125), "onset", "penult"),
+    ((12.5, (64, 32, (-10.5, 40.25), (-5, 120.125)), "onset", "penult"),
      '{"type":"phys","x_bins":64,"f_bins":32,"x_min":-10.5,"x_max":40.25,'
      '"f_min":-5,"f_max":120.125,"F_star_pN":12.5,"align":"onset","seg":"penult","v":4}'),
-    ((50.001, 10, 20, (0, 1), (0, 2), "lc", "last"),
+    ((50.001, (10, 20, (0, 1), (0, 2)), "lc", "last"),
      '{"type":"phys","x_bins":10,"f_bins":20,"x_min":0,"x_max":1,'
      '"f_min":0,"f_max":2,"F_star_pN":50.001,"align":"lc","seg":"last","v":4}'),
 ]
 
 WLC_KEYS = [
-    ((100, 80, (-0.1, 1.2), (-5.0, 45.0), "last"),
+    (((100, 80, (-0.1, 1.2), (-5.0, 45.0)), "last"),
      '{"x_bins":100,"f_bins":80,"x_min":-0.1,"x_max":1.2,'
      '"f_min":-5.0,"f_max":45.0,"seg":"last","v":6}'),
-    ((64, 32, (-0.1001, 1.25), (-5, 45.001), "first"),
+    (((64, 32, (-0.1001, 1.25), (-5, 45.001)), "first"),
      '{"x_bins":64,"f_bins":32,"x_min":-0.1001,"x_max":1.25,'
      '"f_min":-5,"f_max":45.001,"seg":"first","v":6}'),
-    ((10, 20, (0, 1), (0, 2), "penult"),
+    (((10, 20, (0, 1), (0, 2)), "penult"),
      '{"x_bins":10,"f_bins":20,"x_min":0,"x_max":1,'
      '"f_min":0,"f_max":2,"seg":"penult","v":6}'),
 ]
@@ -189,14 +189,14 @@ def test_phys_worked_example_hist_grid_call_gives_the_old_call_string():
 
 def test_physical_histogram_pin_counts_and_dtype():
     H = _phys_hist(np.array([0.0, 1.0, 2.0, 3.0]), np.array([1.0, 1.0, 2.0, 2.0]),
-                   1.0, 2, 2, (-1.0, 3.0), (0.0, 4.0))
+                   1.0, (2, 2, (-1.0, 3.0), (0.0, 4.0)))
     np.testing.assert_array_equal(H, [[2, 0], [0, 2]])
     assert H.dtype == np.uint32
 
 
 def test_physical_histogram_pin_none_anchor_drops_the_curve():
     assert _phys_hist(np.array([1.0, 2.0]), np.array([1.0, 2.0]),
-                      None, 2, 2, (0.0, 2.0), (0.0, 2.0)) is None
+                      None, (2, 2, (0.0, 2.0), (0.0, 2.0))) is None
 
 
 def test_physical_histogram_pin_zero_lp_anchor_path_is_none():
@@ -205,53 +205,40 @@ def test_physical_histogram_pin_zero_lp_anchor_path_is_none():
     x = np.linspace(1.0, 40.0, 30)
     F = np.linspace(1.0, 30.0, 30)
     anchor = ep.PHYS_ALIGN_ANCHORS["fstar"](x, F, ChainFit("wlc", (0.0, 50.0)), 5.0)
-    assert _phys_hist(x, F, anchor, 4, 4, (-50.0, 50.0), (0.0, 40.0)) is None
+    assert _phys_hist(x, F, anchor, (4, 4, (-50.0, 50.0), (0.0, 40.0))) is None
 
 
 def test_wlc_histogram_pin_counts_and_dtype():
     from smfs_catalog.models import _k_B, _TEMPERATURE
     kT = _k_B * _TEMPERATURE
     H = _wlc_hist(np.array([5.0, 1.0]), np.array([kT / 2.0, kT / 2.0]),
-                  2.0, 10.0, 2, 2, (0.0, 1.0), (0.0, 2.0))
+                  2.0, 10.0, (2, 2, (0.0, 1.0), (0.0, 2.0)))
     np.testing.assert_array_equal(H, [[0, 1], [0, 1]])
     assert H.dtype == np.uint32
 
 
 # ── size guard (CLAUDE.md limits) on what d2 changes ─────────────────────────
 
-def _tree(module):
-    return ast.parse(Path(module.__file__).read_text(encoding="utf-8"))
-
-
-def _top_functions(module) -> dict:
-    return {n.name: n for n in _tree(module).body if isinstance(n, ast.FunctionDef)}
-
-
-def _init(module, cls_name):
-    cls = next(n for n in _tree(module).body
-               if isinstance(n, ast.ClassDef) and n.name == cls_name)
-    return next(n for n in cls.body
-                if isinstance(n, ast.FunctionDef) and n.name == "__init__")
-
-
 @pytest.mark.parametrize("name", [
     "compute_physical_histogram_at", "compute_wlc_histogram",
     "_phys_grid_params", "_wlc_grid_params"])
 def test_changed_calculator_is_within_the_size_limits(name):
-    assert violations(name, _top_functions(ep)[name]) == []
+    assert violations(name, function_node(ep.__file__, name)) == []
 
 
 def test_grid_dialog_init_is_within_the_size_limits():
     # Today 63 lines: d2 must bring it to 50 (split out helpers).
     assert violations("_GridDialog.__init__",
-                      _init(base_2dh_window, "_GridDialog")) == []
+                      function_node(base_2dh_window.__file__, "__init__",
+                                    "_GridDialog")) == []
 
 
 def test_physical_grid_dialog_init_is_within_the_other_limits():
     # Excluded: the argument limit (6 by the plan's count, D5).  Lines,
     # decision points and nesting are still checked.
     found = violations("_PhysicalGridDialog.__init__",
-                       _init(physical_2dh_window, "_PhysicalGridDialog"))
+                       function_node(physical_2dh_window.__file__, "__init__",
+                                     "_PhysicalGridDialog"))
     assert [v for v in found if "arguments" not in v] == []
 
 

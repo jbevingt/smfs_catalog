@@ -23,6 +23,7 @@ import pytest
 
 from size_limits import violations
 from smfs_catalog import scope
+from source_inspect import function_node
 
 _PKG = Path(scope.__file__).parent
 _FACET_KEYS = {"users", "analytes", "solvents", "techniques", "substrates",
@@ -93,9 +94,8 @@ _CHANGED = {
 def _changed_functions():
     out = []
     for module, names in _CHANGED.items():
-        by_name = {f.name: f for f in _functions(_tree(_PKG / module))}
         for name in names:
-            out.append((f"{module}:{name}", by_name[name]))
+            out.append((f"{module}:{name}", function_node(_PKG / module, name)))
     return out
 
 

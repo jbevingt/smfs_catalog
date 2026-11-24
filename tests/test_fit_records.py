@@ -24,7 +24,6 @@ The savers become `save_distribution_fit(record, db_path)` and
 below (the only place that knows the call shape), read every column back and
 check the saved-fit history loaders return the same rows.
 """
-import ast
 import dataclasses
 import inspect
 import json
@@ -38,6 +37,7 @@ from smfs_catalog import db
 
 sys.path.insert(0, str(Path(__file__).parent))
 from size_limits import violations  # noqa: E402
+from source_inspect import function_node, imported_names  # noqa: E402
 
 DIST_FIELDS = ("variable", "units", "n_values", "n_peaks", "model_label",
                "params_json", "gof_json", "fit_config_json", "experimentalist")
@@ -114,6 +114,14 @@ def test_record_defaults_match_todays_signature():
     assert required == set(DIST)          # units and fit_config_json stay required
 
 
+def test_fit_records_module_imports_no_qt_and_no_db():
+    segments = {seg.lower() for n in imported_names(_records().__file__)
+                for seg in n.split(".")}
+    banned = {s for s in segments
+              if s == "db" or s.startswith(("pyqt", "pyside", "qt"))}
+    assert not banned, f"fit_records must not import {sorted(banned)}"
+
+
 def test_save_distribution_fit_takes_record_and_db_path():
     assert list(inspect.signature(db.save_distribution_fit).parameters) == [
         "record", "db_path"]
@@ -176,7 +184,10 @@ def test_saved_gmm_fits_load_back_unchanged(catalog):
 
 @pytest.mark.parametrize("name", ["save_distribution_fit", "save_gmm_fit"])
 def test_saver_within_size_limits(name):
-    tree = ast.parse(Path(db.__file__).read_text(encoding="utf-8"))
-    (fn,) = [n for n in ast.walk(tree)
-             if isinstance(n, ast.FunctionDef) and n.name == name]
-    assert violations(name, fn) == []
+    assert violations(name, function_node(db.__file__, name)) == []
+
+
+def test_dist_fit_model_pane_save_fit_is_within_size_limits():
+    path = Path(db.__file__).parent / "dist_fit_window.py"
+    fn = function_node(path, "_save_fit", "_ModelPane")
+    assert violations("_ModelPane._save_fit", fn) == []

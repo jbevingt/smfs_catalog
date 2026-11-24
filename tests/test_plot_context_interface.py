@@ -24,7 +24,6 @@ Open points settled here, for the coder:
     selection window) has no planned dataclass; its type is left to the coder
     and no test constructs it.
 """
-import ast
 import dataclasses
 import importlib
 import inspect
@@ -34,6 +33,7 @@ import pytest
 
 from smfs_catalog import event_processor
 from size_limits import arg_count, violations
+from source_inspect import function_node, imported_names
 
 PKG = Path(event_processor.__file__).resolve().parent
 _PLOT_CONTEXT = PKG / "plot_context.py"
@@ -99,23 +99,10 @@ def test_fit_context_needs_only_the_database():
     assert not ctx.paths and ctx.caption == ""
 
 
-def _imported_names(tree):
-    names = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names += [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            mod = node.module or ""
-            names.append(mod)
-            names += [f"{mod}.{a.name}" for a in node.names]
-    return names
-
-
 def test_plot_context_imports_no_qt_and_no_database():
     assert _PLOT_CONTEXT.exists(), "smfs_catalog/plot_context.py does not exist"
-    tree = ast.parse(_PLOT_CONTEXT.read_text(encoding="utf-8"))
     banned = {"pyqt6", "pyqtgraph", "sqlite3", "db", "qt_utils"}
-    bad = [n for n in _imported_names(tree)
+    bad = [n for n in imported_names(_PLOT_CONTEXT)
            if banned & {part.lower() for part in n.split(".")}]
     assert not bad, f"plot_context.py imports {bad}"
 
@@ -167,13 +154,7 @@ def test_pca_window_grid_is_the_d2_hist_grid():
 # the other limits now, is held to all of them.
 
 def _constructor(module, cls):
-    tree = ast.parse((PKG / f"{module}.py").read_text(encoding="utf-8"))
-    for node in tree.body:
-        if isinstance(node, ast.ClassDef) and node.name == cls:
-            for fn in node.body:
-                if isinstance(fn, ast.FunctionDef) and fn.name == "__init__":
-                    return fn
-    raise AssertionError(f"{module}.{cls}.__init__ not found")
+    return function_node(PKG / f"{module}.py", "__init__", cls)
 
 
 @pytest.mark.parametrize("module,cls,names", _SIGNATURES, ids=_IDS)

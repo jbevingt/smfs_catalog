@@ -28,7 +28,6 @@ keywords of `db.list_files`:
 The db functions take it as `flt`; the dashboard scope becomes one with
 `scope_to_query`.  The module imports neither Qt nor db.
 """
-import ast
 import dataclasses
 import inspect
 from pathlib import Path
@@ -37,6 +36,7 @@ import pytest
 
 from smfs_catalog import db, file_filter, scope
 from smfs_catalog.file_filter import FileFilter
+from source_inspect import imported_names
 
 FIELDS = (
     "directory", "directories", "curve_type", "curve_types", "parse_ok",
@@ -76,13 +76,7 @@ def test_file_filter_builds_from_keywords_and_compares_by_value():
 
 
 def test_file_filter_module_imports_no_qt_and_no_db():
-    tree = ast.parse(Path(file_filter.__file__).read_text(encoding="utf-8"))
-    names = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names += [a.name for a in node.names]
-        elif isinstance(node, ast.ImportFrom):
-            names += [node.module or ""] + [a.name for a in node.names]
+    names = imported_names(file_filter.__file__)
     segments = {seg.lower() for n in names for seg in n.split(".")}
     banned = {s for s in segments
               if s == "db" or s.startswith(("pyqt", "pyside", "qt"))}

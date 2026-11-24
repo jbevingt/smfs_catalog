@@ -22,15 +22,14 @@ Three kinds of test:
 3. Size guard: the functions stay inside the CLAUDE.md limits
    (`bootstrap_fit_ci` is exempt from the argument limit; plan D5 lists it).
 """
-import ast
 import dataclasses
 import inspect
-from pathlib import Path
 
 import numpy as np
 import pytest
 
 from size_limits import violations
+from source_inspect import function_node
 from smfs_catalog import dist_fit_core as core
 from smfs_catalog.dist_fit_core import (
     BOOTSTRAP_CI_METHOD,
@@ -58,11 +57,14 @@ def _total(fn, x, popt, pcov, **settings):
     return total_fit_ci(fn, x, popt, pcov, core.CiSettings(**settings))
 
 
-def _bootstrap(components, data, edges, normalize, popt, bounds, x_fine=None,
-               progress=None, **settings):
-    """bootstrap_fit_ci with settings given by name (n_draws/pct/seed)."""
-    return bootstrap_fit_ci(components, data, edges, normalize, popt, bounds,
-                            x_fine, core.CiSettings(**settings), progress)
+def _bootstrap(fixture, with_band=True, **settings):
+    """bootstrap_fit_ci on the `_boot_fixture()` tuple (normalised data), with
+    settings given by name (n_draws/pct/seed).  with_band=False passes no
+    x_fine, so no band is drawn."""
+    comps, data, edges, popt, bounds, x_fine = fixture
+    return bootstrap_fit_ci(comps, data, edges, True, popt, bounds,
+                            x_fine if with_band else None,
+                            core.CiSettings(**settings))
 
 
 # ---- 1. interface -------------------------------------------------------------
@@ -209,9 +211,7 @@ def _boot_fixture():
 
 
 def test_bootstrap_matches_recorded_interval_for_a_fixed_seed():
-    comps, data, edges, popt, bounds, x_fine = _boot_fixture()
-    b = _bootstrap(comps, data, edges, True, popt, bounds, x_fine,
-                   n_draws=60, pct=90.0, seed=3)
+    b = _bootstrap(_boot_fixture(), n_draws=60, pct=90.0, seed=3)
     assert np.array_equal(b.lo, [
         0.12351606005041663, 80.72617750524319, 2.317962704538476,
         0.058945645738301494, 111.27096602445954, 2.3960931437153477])
@@ -234,19 +234,17 @@ def test_bootstrap_matches_recorded_interval_for_a_fixed_seed():
 
 
 def test_bootstrap_seed_selects_the_resamples():
-    comps, data, edges, popt, bounds, _ = _boot_fixture()
-    a = _bootstrap(comps, data, edges, True, popt, bounds, n_draws=40, seed=1)
-    b = _bootstrap(comps, data, edges, True, popt, bounds, n_draws=40, seed=1)
-    c = _bootstrap(comps, data, edges, True, popt, bounds, n_draws=40, seed=2)
+    fixture = _boot_fixture()
+    a = _bootstrap(fixture, with_band=False, n_draws=40, seed=1)
+    b = _bootstrap(fixture, with_band=False, n_draws=40, seed=1)
+    c = _bootstrap(fixture, with_band=False, n_draws=40, seed=2)
     assert np.array_equal(a.lo, b.lo) and np.array_equal(a.hi, b.hi)
     assert not np.array_equal(a.lo, c.lo)
     assert a.band is None
 
 
 def test_bootstrap_manifest_carries_the_run_settings():
-    comps, data, edges, popt, bounds, x_fine = _boot_fixture()
-    b = _bootstrap(comps, data, edges, True, popt, bounds, x_fine,
-                   n_draws=60, pct=90.0, seed=3)
+    b = _bootstrap(_boot_fixture(), n_draws=60, pct=90.0, seed=3)
     assert b.manifest_fields(None) == {
         "ci_band_drawn": True,
         "ci_method": BOOTSTRAP_CI_METHOD,
@@ -276,9 +274,7 @@ def test_manifest_key_order_for_no_interval_computed():
 
 
 def test_bootstrap_manifest_key_order():
-    comps, data, edges, popt, bounds, x_fine = _boot_fixture()
-    b = _bootstrap(comps, data, edges, True, popt, bounds, x_fine,
-                   n_draws=60, pct=90.0, seed=3)
+    b = _bootstrap(_boot_fixture(), n_draws=60, pct=90.0, seed=3)
     assert list(b.manifest_fields(None)) == _BOOT_KEYS
 
 
@@ -289,18 +285,13 @@ def test_bootstrap_failed_draw_handler_is_kept():
 
 # ---- 3. size guard ------------------------------------------------------------
 
-def _core_functions():
-    tree = ast.parse(Path(core.__file__).read_text(encoding="utf-8"))
-    return {n.name: n for n in tree.body if isinstance(n, ast.FunctionDef)}
-
-
 @pytest.mark.parametrize("name", ["ci_manifest_fields", "total_fit_ci"])
 def test_ci_functions_meet_the_size_limits(name):
-    assert violations(name, _core_functions()[name]) == []
+    assert violations(name, function_node(core.__file__, name)) == []
 
 
 def test_bootstrap_fit_ci_meets_size_limits_apart_from_arguments():
     found = [v for v in violations("bootstrap_fit_ci",
-                                   _core_functions()["bootstrap_fit_ci"])
+                                   function_node(core.__file__, "bootstrap_fit_ci"))
              if "arguments" not in v]
     assert found == []

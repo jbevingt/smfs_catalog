@@ -49,40 +49,42 @@ def _overlay(path):
 
 # -- adapters: the only place that knows today's keyword API -------------------
 
-def _mean_curve(counts, *, title, x_range, f_range, x_label, f_label, x_unit,
-                f_unit, caption, physical, paths, provenance, db_path,
-                overlay_fn=None, z_pct=100, auto_max=1.0):
+def _mean_curve(counts, **kw):
+    """kw: title, x_range, f_range, x_label, f_label, x_unit, f_unit, caption,
+    physical, paths, provenance, db_path; optional overlay_fn, z_pct, auto_max."""
     return MeanCurveWindow(
-        title,
-        HistView(counts, auto_max, z_pct, _LUT, x_range, f_range),
-        AxisLabels(x_label, f_label, x_unit, f_unit),
-        ExportContext(caption, provenance or {}, paths or [], db_path, physical,
-                      overlay_fn))
+        kw["title"],
+        HistView(counts, kw.get("auto_max", 1.0), kw.get("z_pct", 100), _LUT,
+                 kw["x_range"], kw["f_range"]),
+        AxisLabels(kw["x_label"], kw["f_label"], kw["x_unit"], kw["f_unit"]),
+        ExportContext(kw["caption"], kw["provenance"] or {}, kw["paths"] or [],
+                      kw["db_path"], kw["physical"], kw.get("overlay_fn")))
 
 
-def _pca(histograms, *, x_bins, f_bins, x_range, f_range, x_label, f_label,
-         x_unit, f_unit, caption, provenance, db_path, physical, overlay_fn):
+def _pca(histograms, **kw):
+    """kw: x_bins, f_bins, x_range, f_range, x_label, f_label, x_unit, f_unit,
+    caption, provenance, db_path, physical, overlay_fn."""
     return PCAWindow(
         histograms,
-        HistGrid(x_bins, f_bins, x_range, f_range),
-        AxisLabels(x_label, f_label, x_unit, f_unit),
-        ExportContext(caption, provenance, [], db_path, physical, overlay_fn))
+        HistGrid(kw["x_bins"], kw["f_bins"], kw["x_range"], kw["f_range"]),
+        AxisLabels(kw["x_label"], kw["f_label"], kw["x_unit"], kw["f_unit"]),
+        ExportContext(kw["caption"], kw["provenance"], [], kw["db_path"],
+                      kw["physical"], kw["overlay_fn"]))
 
 
-def _scatter(xy, x_label, y_label, x_unit, y_unit, caption):
-    return _ScatterPane(xy, AxisLabels(x_label, y_label, x_unit, y_unit), caption)
+def _scatter(xy, labels, caption):
+    """labels is (x_label, y_label, x_unit, y_unit)."""
+    return _ScatterPane(xy, AxisLabels(*labels), caption)
 
 
-def _gmm_model(scatter, xy, x_label, y_label, x_unit, y_unit, db_path, paths,
-               caption):
-    return _GmmModelPane(scatter, xy,
-                         AxisLabels(x_label, y_label, x_unit, y_unit),
-                         FitContext(db_path, paths, caption))
+def _gmm_model(scatter, xy, labels, context):
+    """labels as for _scatter; context is (db_path, paths, caption)."""
+    return _GmmModelPane(scatter, xy, AxisLabels(*labels), FitContext(*context))
 
 
-def _dist_model(plot, variable, units, db_path, paths, caption):
-    return _DistModelPane(plot, variable, units,
-                          FitContext(db_path, paths, caption))
+def _dist_model(plot, variable, units, context):
+    """context is (db_path, paths, caption)."""
+    return _DistModelPane(plot, variable, units, FitContext(*context))
 
 
 def _paths_of(window):
@@ -229,9 +231,10 @@ def test_pca_cluster_popout_records_the_cluster_and_its_paths():
 def _gmm_panes(paths=("a.ibw", "b.ibw", "c.ibw")):
     rng = np.random.default_rng(1)
     xy = rng.normal([80.0, 60.0], [3.0, 4.0], size=(len(paths), 2))
-    scatter = _scatter(xy, "Length", "Force", "nm", "pN", "pass | gmm")
-    pane = _gmm_model(scatter, xy, "Length", "Force", "nm", "pN", "catalog.db",
-                      list(paths), "pass | gmm")
+    labels = ("Length", "Force", "nm", "pN")
+    scatter = _scatter(xy, labels, "pass | gmm")
+    pane = _gmm_model(scatter, xy, labels,
+                      ("catalog.db", list(paths), "pass | gmm"))
     return scatter, pane
 
 
@@ -261,8 +264,9 @@ def test_gmm_model_pane_keeps_database_and_paths():
 def _dist_panes():
     data = np.array([1.0, 2.0, 2.5, 3.0, 3.5, 4.0, 2.2, 2.8])
     plot = _PlotPane(data, "Rupture force", "pN", caption="pass | dist")
-    pane = _dist_model(plot, "Rupture force", "pN", "catalog.db",
-                       [f"{i}.ibw" for i in range(len(data))], "pass | dist")
+    pane = _dist_model(plot, "Rupture force", "pN",
+                       ("catalog.db", [f"{i}.ibw" for i in range(len(data))],
+                        "pass | dist"))
     return plot, pane
 
 
