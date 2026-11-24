@@ -10,6 +10,7 @@
 import sqlite3
 import os
 import zlib
+from contextlib import contextmanager
 import sys
 import platform
 from functools import lru_cache
@@ -95,6 +96,20 @@ def get_connection(db_path: str = DEFAULT_DB_PATH, timeout: float = 30.0) -> sql
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.create_function("path_matches", 2, path_matches, deterministic=True)
     return conn
+
+
+@contextmanager
+def _borrowed(conn, db_path, *, commit=False):
+    c = conn or get_connection(db_path)
+    try:
+        if commit:
+            with c:
+                yield c
+        else:
+            yield c
+    finally:
+        if conn is None:
+            c.close()
 
 
 # ── The catalog's version ─────────────────────────────────────────────────────
@@ -1410,12 +1425,8 @@ def get_file_id(
 ) -> Optional[int]:
     """Return files.id for the given path, or None if the file is not in the DB."""
     path = normalize_path(path)
-    c = conn or get_connection(db_path)
-    try:
+    with _borrowed(conn, db_path) as c:
         row = c.execute("SELECT id FROM files WHERE path = ?", (path,)).fetchone()
-    finally:
-        if conn is None:
-            c.close()
     return row["id"] if row else None
 
 
@@ -1425,14 +1436,10 @@ def get_path(
     conn: Optional[sqlite3.Connection] = None,
 ) -> Optional[str]:
     """Return files.path for the given id, or None if not present."""
-    c = conn or get_connection(db_path)
-    try:
+    with _borrowed(conn, db_path) as c:
         row = c.execute(
             "SELECT path FROM files WHERE id = ?", (file_id,)
         ).fetchone()
-    finally:
-        if conn is None:
-            c.close()
     return row["path"] if row else None
 
 
@@ -1447,16 +1454,12 @@ def get_analysis_result(
     """Return a cached value only when its legacy code_version column matches the supplied scientific-method identity."""
     if code_version is None:
         return None
-    c = conn or get_connection(db_path)
-    try:
+    with _borrowed(conn, db_path) as c:
         row = c.execute("""
             SELECT value, code_version
             FROM   analysis_results
             WHERE  file_id = ? AND analysis_type = ? AND params_json = ?
         """, (file_id, analysis_type, params_json)).fetchone()
-    finally:
-        if conn is None:
-            c.close()
     if row is None:
         return None
     if row["code_version"] != code_version:
@@ -1505,17 +1508,13 @@ def get_analysis_results_multi(
     """Batched get_analysis_result for several analysis_types under the same (file_id, params_json, code_version) — one connection/query..."""
     if not analysis_types or code_version is None:
         return {}
-    c = conn or get_connection(db_path)
-    placeholders = ",".join("?" for _ in analysis_types)
-    try:
+    with _borrowed(conn, db_path) as c:
+        placeholders = ",".join("?" for _ in analysis_types)
         rows = c.execute(f"""
             SELECT analysis_type, value, code_version
             FROM   analysis_results
             WHERE  file_id = ? AND params_json = ? AND analysis_type IN ({placeholders})
         """, (file_id, params_json, *analysis_types)).fetchall()
-    finally:
-        if conn is None:
-            c.close()
     return {
         r["analysis_type"]: r["value"]
         for r in rows
@@ -2033,16 +2032,12 @@ def get_event_histogram(
     conn:        Optional[sqlite3.Connection] = None,
 ) -> Optional[sparse.csr_array]:
     """Return the cached histogram, or None if not yet computed."""
-    c = conn or get_connection(db_path)
-    try:
+    with _borrowed(conn, db_path) as c:
         row = c.execute(
             "SELECT histogram, x_bins, f_bins FROM event_histograms "
             "WHERE file_id = ? AND params_json = ?",
             (file_id, params_json),
         ).fetchone()
-    finally:
-        if conn is None:
-            c.close()
     if row is None:
         return None
     return _decode_event_histogram(row["histogram"], row["x_bins"], row["f_bins"])
@@ -2056,8 +2051,7 @@ def get_event_histograms_bulk(
 ) -> dict[int, sparse.csr_array]:
     """file_id → cached histogram, for those of `file_ids` that have one."""
     out: dict[int, sparse.csr_array] = {}
-    c = conn or get_connection(db_path)
-    try:
+    with _borrowed(conn, db_path) as c:
         for chunk in _sql_chunks(list(file_ids)):
             ph = ",".join("?" * len(chunk))
             for row in c.execute(
@@ -2067,9 +2061,6 @@ def get_event_histograms_bulk(
             ):
                 out[row["file_id"]] = _decode_event_histogram(
                     row["histogram"], row["x_bins"], row["f_bins"])
-    finally:
-        if conn is None:
-            c.close()
     return out
 
 
@@ -2132,16 +2123,12 @@ def get_deflection_histogram(
     conn:        Optional[sqlite3.Connection] = None,
 ) -> Optional[tuple[np.ndarray, int, int]]:
     """(counts, n_below, n_above) for one curve, or None if not on this grid."""
-    c = conn or get_connection(db_path)
-    try:
+    with _borrowed(conn, db_path) as c:
         row = c.execute(
             "SELECT counts, n_bins, n_below, n_above FROM deflection_histograms "
             "WHERE file_id = ? AND params_json = ?",
             (file_id, params_json),
         ).fetchone()
-    finally:
-        if conn is None:
-            c.close()
     if row is None:
         return None
     counts = np.frombuffer(zlib.decompress(row["counts"]), dtype=np.uint32)
@@ -2202,8 +2189,7 @@ def sum_deflection_histograms(
     if not paths:
         return total, below, above, n_curves
     keys = [normalize_path(p) for p in paths]
-    c = conn or get_connection(db_path)
-    try:
+    with _borrowed(conn, db_path) as c:
         for chunk in _sql_chunks(keys):
             marks = ",".join("?" * len(chunk))
             cur = c.execute(
@@ -2223,9 +2209,6 @@ def sum_deflection_histograms(
                 below   += row["n_below"]
                 above   += row["n_above"]
                 n_curves += 1
-    finally:
-        if conn is None:
-            c.close()
     return total, below, above, n_curves
 
 
@@ -2240,18 +2223,13 @@ def write_event_map(
     """Store the multi-event ROI document for one file — as its ONE current registration."""
     if code_version is None:
         return
-    c = conn or get_connection(db_path)
-    try:
-        with c:
-            c.execute("DELETE FROM event_map WHERE file_id = ?", (file_id,))
-            c.execute("""
-                INSERT OR REPLACE INTO event_map
-                    (file_id, params_json, code_version, payload_json, computed_at)
-                VALUES (?, ?, ?, ?, ?)
-            """, (file_id, params_json, code_version, payload_json, _now()))
-    finally:
-        if conn is None:
-            c.close()
+    with _borrowed(conn, db_path, commit=True) as c:
+        c.execute("DELETE FROM event_map WHERE file_id = ?", (file_id,))
+        c.execute("""
+            INSERT OR REPLACE INTO event_map
+                (file_id, params_json, code_version, payload_json, computed_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (file_id, params_json, code_version, payload_json, _now()))
 
 
 def get_event_map(
@@ -2264,16 +2242,12 @@ def get_event_map(
     """Return a cached payload only when its legacy code_version column matches the supplied scientific-method identity."""
     if code_version is None:
         return None
-    c = conn or get_connection(db_path)
-    try:
+    with _borrowed(conn, db_path) as c:
         row = c.execute(
             "SELECT payload_json, code_version FROM event_map "
             "WHERE file_id = ? AND params_json = ?",
             (file_id, params_json),
         ).fetchone()
-    finally:
-        if conn is None:
-            c.close()
     if row is None or row["code_version"] != code_version:
         return None
     return row["payload_json"]
@@ -2285,16 +2259,12 @@ def get_latest_event_map(
     conn:    Optional[sqlite3.Connection] = None,
 ) -> Optional[str]:
     """Return the payload_json of the MOST RECENTLY computed event_map document for this file, across ALL param sets and code versions — or..."""
-    c = conn or get_connection(db_path)
-    try:
+    with _borrowed(conn, db_path) as c:
         row = c.execute(
             "SELECT payload_json FROM event_map WHERE file_id = ? "
             "ORDER BY computed_at DESC LIMIT 1",
             (file_id,),
         ).fetchone()
-    finally:
-        if conn is None:
-            c.close()
     return row["payload_json"] if row is not None else None
 
 
@@ -2307,8 +2277,7 @@ def get_latest_event_maps_bulk(
     recent event_map document, as get_latest_event_map; paths with none are absent."""
     keys = [normalize_path(p) for p in paths]
     out: dict[str, tuple[int, str, str]] = {}
-    c = conn or get_connection(db_path)
-    try:
+    with _borrowed(conn, db_path) as c:
         for chunk in _sql_chunks(keys):
             ph = ",".join("?" * len(chunk))
             for row in c.execute(
@@ -2318,9 +2287,6 @@ def get_latest_event_maps_bulk(
                 chunk,
             ):
                 out[row["path"]] = (row["file_id"], row["computed_at"], row["payload_json"])
-    finally:
-        if conn is None:
-            c.close()
     return out
 
 
@@ -2330,14 +2296,10 @@ def get_latest_event_map_params(
     conn:    Optional[sqlite3.Connection] = None,
 ) -> Optional[str]:
     """params_json of the file's current event_map row, or None if it has none. write_event_map deletes a file's prior row before inserting, so..."""
-    c = conn or get_connection(db_path)
-    try:
+    with _borrowed(conn, db_path) as c:
         row = c.execute(
             "SELECT params_json FROM event_map WHERE file_id = ?", (file_id,),
         ).fetchone()
-    finally:
-        if conn is None:
-            c.close()
     return row["params_json"] if row is not None else None
 
 
@@ -2377,16 +2339,12 @@ def get_segment_override(
     conn:    Optional[sqlite3.Connection] = None,
 ) -> dict:
     """{"primary_segment_idx", "secondary_segment_idx", "params_json"} — the raw stored manual pick, or all-None fields if never set."""
-    c = conn or get_connection(db_path)
-    try:
+    with _borrowed(conn, db_path) as c:
         row = c.execute(
             "SELECT primary_segment_idx, secondary_segment_idx, "
             "segment_override_params_json FROM files WHERE id = ?",
             (file_id,),
         ).fetchone()
-    finally:
-        if conn is None:
-            c.close()
     if row is None:
         return {"primary_segment_idx": None, "secondary_segment_idx": None, "params_json": None}
     return {
@@ -2408,8 +2366,7 @@ def get_segment_overrides_bulk(
     }
     if not file_ids:
         return out
-    c = conn or get_connection(db_path)
-    try:
+    with _borrowed(conn, db_path) as c:
         for i in range(0, len(file_ids), 800):
             chunk = file_ids[i:i + 800]
             ph = ",".join("?" * len(chunk))
@@ -2423,9 +2380,6 @@ def get_segment_overrides_bulk(
                     "secondary_segment_idx": r["secondary_segment_idx"],
                     "params_json":           r["segment_override_params_json"],
                 }
-    finally:
-        if conn is None:
-            c.close()
     return out
 
 
@@ -2473,13 +2427,8 @@ def delete_event_map(
     conn:    Optional[sqlite3.Connection] = None,
 ) -> None:
     """Drop every event_map document (all param sets) for one file."""
-    c = conn or get_connection(db_path)
-    try:
-        with c:
-            c.execute("DELETE FROM event_map WHERE file_id = ?", (file_id,))
-    finally:
-        if conn is None:
-            c.close()
+    with _borrowed(conn, db_path, commit=True) as c:
+        c.execute("DELETE FROM event_map WHERE file_id = ?", (file_id,))
 
 
 def write_file_metadata(
@@ -2770,16 +2719,11 @@ def set_event(
     """Write the stage-1 verdict for one file."""
     if event is not None and event not in EVENT_VERDICTS:
         raise ValueError(f"invalid event verdict: {event!r}")
-    c = conn or get_connection(db_path)
-    try:
-        with c:
-            c.execute(
-                "UPDATE files SET event = ? WHERE id = ?",
-                (event, file_id),
-            )
-    finally:
-        if conn is None:
-            c.close()
+    with _borrowed(conn, db_path, commit=True) as c:
+        c.execute(
+            "UPDATE files SET event = ? WHERE id = ?",
+            (event, file_id),
+        )
 
 
 def get_curve_type(
@@ -2792,14 +2736,10 @@ def get_curve_type(
     Written by the scanner at import from the wave itself, so it is known for
     every catalogued file without opening one.
     """
-    c = conn or get_connection(db_path)
-    try:
+    with _borrowed(conn, db_path) as c:
         row = c.execute(
             "SELECT curve_type FROM files WHERE id = ?", (file_id,)
         ).fetchone()
-    finally:
-        if conn is None:
-            c.close()
     return row["curve_type"] if row else None
 
 
@@ -2811,16 +2751,11 @@ def set_unusable_reason(
     conn: Optional[sqlite3.Connection] = None,
 ) -> None:
     """Record WHY a file cannot be analysed — or clear it (reason=None)."""
-    c = conn or get_connection(db_path)
-    try:
-        with c:
-            c.execute(
-                "UPDATE files SET unusable_reason = ?, unusable_detail = ? WHERE id = ?",
-                (reason, detail, file_id),
-            )
-    finally:
-        if conn is None:
-            c.close()
+    with _borrowed(conn, db_path, commit=True) as c:
+        c.execute(
+            "UPDATE files SET unusable_reason = ?, unusable_detail = ? WHERE id = ?",
+            (reason, detail, file_id),
+        )
 
 
 def clear_analysis_queue(db_path: str = DEFAULT_DB_PATH) -> None:
@@ -2874,16 +2809,11 @@ def set_queue_status(
     """Update the status of one queue entry."""
     if status not in ("pending", "running", "done") and not status.startswith("error: "):
         raise ValueError(f"invalid queue status: {status!r}")
-    c = conn or get_connection(db_path)
-    try:
-        with c:
-            c.execute(
-                "UPDATE analysis_queue SET status = ? WHERE file_id = ?",
-                (status, file_id),
-            )
-    finally:
-        if conn is None:
-            c.close()
+    with _borrowed(conn, db_path, commit=True) as c:
+        c.execute(
+            "UPDATE analysis_queue SET status = ? WHERE file_id = ?",
+            (status, file_id),
+        )
 
 
 def queue_paths(db_path: str = DEFAULT_DB_PATH) -> list[str]:
