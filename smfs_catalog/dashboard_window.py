@@ -33,6 +33,7 @@ from . import db as _db
 from . import provenance as _provenance
 from . import criteria_gate as _gate
 from . import export_utils as _export
+from . import invols_store as _invols_store
 from . import quantities as _quant
 from . import signal_processing as _sp
 from . import variables as _vars
@@ -130,9 +131,14 @@ _QUEUE_COLUMNS_FIXED = [
     ("status",   "Status"),
     ("event", "Event"),
     ("hit",      "Hit"),
+    ("invols_source", "InvOLS source"),
 ]
 
 _FIXED_COL_TOOLTIPS: dict[str, str] = {
+    "invols_source":
+        "Where the InvOLS this trace is converted with comes from: its own "
+        "per-curve fit, or the mean applied from 'InvOLS for these files…' "
+        "(with the number of traces it was made from and the date).",
     "filename":
         "The file's name only. Full paths are in the files-in-scope table "
         "above and in every export — the same name recurs across directories, "
@@ -330,6 +336,10 @@ class DashboardWindow(QMainWindow):
         self._db_path = db_path
         self._scope = new_scope()
         self._children: list[QWidget] = []
+        self._invols_win: QWidget | None = None
+        self._invols_linked_decomp = None
+        self._invols_hooked_viewer = None
+        self._invols_pushing_to_view = False
 
         _db.clear_analysis_queue(db_path)
 
@@ -493,6 +503,16 @@ class DashboardWindow(QMainWindow):
         )
         define_meta_btn.clicked.connect(self._on_define_metadata)
         header.addWidget(define_meta_btn)
+
+        invols_btn = QPushButton("InvOLS for these files…")
+        invols_btn.setToolTip(
+            "Open a window of the per-trace InvOLS values for every file "
+            "currently in scope — the same cohort 'Database — files in scope' "
+            "counts — and apply one value to all of them. Nothing is written "
+            "until you press Apply."
+        )
+        invols_btn.clicked.connect(self._on_invols_for_files)
+        header.addWidget(invols_btn)
 
         remove_btn = QPushButton("🗑 Remove these files…")
         remove_btn.setToolTip(
@@ -950,6 +970,83 @@ class DashboardWindow(QMainWindow):
         if dlg.exec():
             self._refresh_db_and_counts()
 
+    def _scope_paths(self) -> list[str]:
+        rows = _db.list_files(db_path=self._db_path, **scope_to_query(self._scope))
+        return [row["path"] for row in rows]
+
+    def _open_invols_window(self) -> QWidget | None:
+        """The InvOLS window if it is still open; a closed one is discarded."""
+        win = self._invols_win
+        try:
+            if win is not None and win.isVisible():
+                return win
+            if win is not None:
+                win.deleteLater()
+        except RuntimeError:
+            pass
+        return None
+
+    def _on_invols_for_files(self) -> None:
+        paths = self._scope_paths()
+        if not paths:
+            QMessageBox.information(
+                self, "InvOLS for these files", "No files match the current scope.")
+            return
+        win = self._open_invols_window()
+        if win is not None:
+            win.apply_scope(self._scope)
+            win.raise_()
+            win.activateWindow()
+            return
+        from .invols_window import InvolsWindow
+        win = InvolsWindow(paths, self._db_path, open_trace=self.reveal_decomp_at)
+        win.applied.connect(self._on_invols_applied)
+        win.fit_controls.changed.connect(self._on_invols_fit_edited)
+        self._invols_win = win
+        self._spawn(win)
+        self._link_invols_curve_view()
+
+    def _on_invols_applied(self, _n_written: int) -> None:
+        self._refresh_queue_table()
+
+    def _curve_view_fit_window(self):
+        """The curve view's fit window, or None while it does not exist."""
+        viewer = getattr(self, "_viewer", None)
+        return getattr(viewer, "_decomp_win", None)
+
+    def _on_invols_fit_edited(self) -> None:
+        self._link_invols_curve_view()
+        decomp = self._curve_view_fit_window()
+        if decomp is None:
+            return
+        # The window already shows what it just wrote; do not echo it back.
+        self._invols_pushing_to_view = True
+        try:
+            decomp.refresh_invols_fit()
+        finally:
+            self._invols_pushing_to_view = False
+
+    def _on_curve_view_params_changed(self) -> None:
+        win = self._open_invols_window()
+        if win is not None and not self._invols_pushing_to_view:
+            win.refresh_params()
+
+    def _link_invols_curve_view(self) -> None:
+        """Send the curve view's fit-setting edits to the InvOLS window.  Safe
+        to call at any time; it connects each fit window once, and watches the
+        viewer's Decomp button so a fit window built later is found too."""
+        viewer = getattr(self, "_viewer", None)
+        if viewer is None:
+            return
+        if viewer is not self._invols_hooked_viewer:
+            self._invols_hooked_viewer = viewer
+            viewer._btn_decomp.clicked.connect(self._link_invols_curve_view)
+            viewer._btn_decomp.toggled.connect(self._link_invols_curve_view)
+        decomp = self._curve_view_fit_window()
+        if decomp is not None and decomp is not self._invols_linked_decomp:
+            self._invols_linked_decomp = decomp
+            decomp.analysis_params_changed.connect(self._on_curve_view_params_changed)
+
     def _on_remove_files(self) -> None:
         """The undo for Add Data and for an analysis run, over the CURRENT scope — same cohort as "Database — files in scope", "Define metadata..."..."""
         kw = scope_to_query(self._scope)
@@ -1060,14 +1157,17 @@ class DashboardWindow(QMainWindow):
             [r["path"] for r in rows if r["event"] == "event"])
 
         derived_cols = list(self._queue_derived_cols)
-        header = ["path", "filename", "status", "event", "hit"] + [
+        header = ["path", "filename", "status", "event", "hit", "invols_source"] + [
             label for _key, label in derived_cols]
+        sources = _invols_store.source_labels(
+            [int(r["file_id"]) for r in rows], self._db_path)
         out = []
         for row in rows:
             path = row["path"]
             cls  = row["event"] or ""
             verdict = ("hit" if path in hit_set else "non_hit") if cls == "event" else ""
-            rec = [path, row["filename"] or "", row["status"] or "", cls, verdict]
+            rec = [path, row["filename"] or "", row["status"] or "", cls, verdict,
+                   sources[int(row["file_id"])]]
             for key, _label in derived_cols:
                 v = self._queue_cell_value(key, path, col_values)
                 rec.append("" if v is None else v)
@@ -1081,7 +1181,8 @@ class DashboardWindow(QMainWindow):
                 window="dashboard_queue",
                 segment_select=read_segment_select(self._db_path),
                 columns=header,
-                column_keys=["path", "filename", "status", "event", "hit"]
+                column_keys=["path", "filename", "status", "event", "hit",
+                             "invols_source"]
                             + [k for k, _l in derived_cols],
                 n_rows=len(out),
             )
@@ -1366,6 +1467,7 @@ class DashboardWindow(QMainWindow):
         self._queue_table.setRowCount(len(rows))
         self._queue_id_to_row = {}
         self._queue_row_ids = [int(row["file_id"]) for row in rows]
+        sources = _invols_store.source_labels(self._queue_row_ids, self._db_path)
         start_derived = len(_QUEUE_COLUMNS_FIXED)
         for r, row in enumerate(rows):
             self._queue_id_to_row[int(row["file_id"])] = r
@@ -1374,6 +1476,8 @@ class DashboardWindow(QMainWindow):
             cls = row["event"] or ""
             self._queue_table.setItem(r, 2, QTableWidgetItem(cls))
             self._set_hit_cell(r, cls, row["path"], hit_set, gate_reasons)
+            self._queue_table.setItem(
+                r, 4, QTableWidgetItem(sources[int(row["file_id"])]))
             self._queue_table.item(r, 0).setData(Qt.ItemDataRole.UserRole, row["file_id"])
             self._queue_table.item(r, 0).setData(Qt.ItemDataRole.UserRole + 1, row["path"])
             for c, (key, _label) in enumerate(self._queue_derived_cols, start=start_derived):
@@ -1718,6 +1822,7 @@ class DashboardWindow(QMainWindow):
             )
             self._children.append(self._viewer)
             self._viewer.show()
+            self._link_invols_curve_view()
         else:
             self._viewer.raise_()
             self._viewer.activateWindow()

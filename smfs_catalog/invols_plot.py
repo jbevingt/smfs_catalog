@@ -155,8 +155,9 @@ class InvolsPlot(pg.PlotWidget):
         self._view_box = _BoxViewBox()
         super().__init__(parent, viewBox=self._view_box,
                          axisItems={"bottom": _DateAxis()})
-        set_si_label(self, "left", variables.OWN_INVOLS_LABEL,
-                     quantities.unit_of(TRANSFORM_KEY), si=False)
+        set_si_label(self, "left", quantities.with_unit(
+            variables.OWN_INVOLS_LABEL, quantities.unit_of(TRANSFORM_KEY)),
+            si=False)
         self._view_box.disableAutoRange()
         self._scatters = []
         self._outlier_scatter = None
