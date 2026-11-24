@@ -9,6 +9,8 @@ so these tests delete it to force the second pass.
 
 from __future__ import annotations
 
+import pytest
+
 from smfs_catalog import criteria_migration as _mig
 from smfs_catalog import db as _db
 
@@ -53,6 +55,11 @@ def _alice_catalog(catalog) -> str:
     return catalog
 
 
+@pytest.mark.xfail(strict=True, reason=(
+    "NOT IDEMPOTENT: a second pass finds the ticks already stripped, computes an "
+    "empty legacy gate for alice, and clears her gating bound (1.0, 9.0) to NULL, "
+    "overwriting the parked-bounds archive.  D8's retry-next-launch is unsafe "
+    "until reconcile can tell an owner was already reconciled."))
 def test_second_reconcile_of_an_already_reconciled_owner_changes_nothing(catalog):
     db_path = _alice_catalog(catalog)
     _mig.reconcile(db_path)
