@@ -1,5 +1,6 @@
 """provenance.sklearn_version(): one shared copy, narrow exception handling."""
 
+import ast
 import re
 import sys
 import types
@@ -45,8 +46,22 @@ def test_window_has_no_private_copy(name):
     assert not re.search(r"\b_sklearn_version\b", src)
 
 
+def _tree(name):
+    return ast.parse((_PKG / name).read_text(encoding="utf-8"))
+
+
 @pytest.mark.parametrize("name", _WINDOWS)
-def test_window_uses_provenance_version(name):
-    src = (_PKG / name).read_text(encoding="utf-8")
-    assert re.search(r"sklearn_version\s*=\s*(?:provenance\.)?sklearn_version\(\)", src)
-    assert re.search(r"\bprovenance\b", src)
+def test_window_imports_sklearn_version_from_provenance(name):
+    imported = any(
+        isinstance(n, ast.ImportFrom) and n.level == 1 and n.module == "provenance"
+        and any(a.name == "sklearn_version" and a.asname is None for a in n.names)
+        for n in ast.walk(_tree(name)))
+    assert imported, f"{name} must do `from .provenance import sklearn_version`"
+
+
+@pytest.mark.parametrize("name", _WINDOWS)
+def test_window_does_not_define_its_own_sklearn_version(name):
+    defs = [n.name for n in ast.walk(_tree(name))
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and n.name.lstrip("_") == "sklearn_version"]
+    assert defs == []
