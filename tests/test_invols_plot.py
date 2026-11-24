@@ -573,9 +573,10 @@ def _axis_centre(plot, name) -> QPoint:
 
 class _DragStub:
     """A drag event as pyqtgraph's AxisItem hands it to the view box
-    (``ViewBox.mouseDragEvent(ev, axis=...)``).  Real mouse events do not reach
-    an axis item offscreen, so the same path is driven directly; the stub was
-    checked to pan a plain ``pg.ViewBox`` along the axis it is given."""
+    (``ViewBox.mouseDragEvent(ev, axis=...)``).  Real mouse events do reach an
+    axis item offscreen when they are paced about 25 ms apart (see the real-event
+    test below); this stub drives the same path without waiting, and was checked
+    to pan a plain ``pg.ViewBox`` along the axis it is given."""
 
     def __init__(self, last, pos, down, *, start=False, finish=False):
         self._last, self._pos, self._down = last, pos, down
@@ -774,3 +775,226 @@ def test_click_then_double_click_sequence_selects_once_and_opens_once(plot):
     _send(plot, QEvent.Type.MouseButtonRelease, p, LEFT, Qt.MouseButton.NoButton)
     assert picked.calls == [(1,)]
     assert opened.calls == [(1,)]
+
+
+# ── F1: auto-range follows the bulk on y but keeps the outlier's time in x ───
+
+MINUTE = 60.0
+TWO_DAYS = 2 * 86400.0
+
+
+def _session_with_outlier(after: bool):
+    """29 traces a minute apart and a 9957 outlier two days after (or before)."""
+    values = [float(v) for v in np.linspace(199, 201, 29)]
+    rows = [_row(i, v, time_s=T0 + i * MINUTE) for i, v in enumerate(values)]
+    t_out = T0 + 28 * MINUTE + TWO_DAYS if after else T0 - TWO_DAYS
+    rows.append(_row(29, 9957.0, time_s=t_out))
+    return rows, t_out
+
+
+def _assert_outlier_visible_and_bulk_framed(plot, t_out):
+    (xlo, xhi), (ylo, yhi) = plot.getViewBox().viewRange()
+    assert xlo <= t_out <= xhi
+    assert yhi < 300 and ylo <= 199.0 and yhi >= 201.0
+    markers = _markers(plot)
+    assert len(markers) == 1
+    _, marker = markers[0]
+    assert math.isclose(marker.pos().x(), t_out, abs_tol=1.0)
+    assert xlo <= marker.pos().x() <= xhi
+    assert ylo <= marker.pos().y() <= yhi
+
+
+@pytest.mark.parametrize("after", [True, False], ids=["later", "earlier"])
+def test_auto_range_keeps_a_distant_in_time_outlier_in_view(plot, after):
+    rows, t_out = _session_with_outlier(after)
+    plot.set_traces(rows)
+    plot.autoRange()
+    _settle(plot)
+    _assert_outlier_visible_and_bulk_framed(plot, t_out)
+
+
+@pytest.mark.parametrize("after", [True, False], ids=["later", "earlier"])
+def test_enable_auto_range_keeps_a_distant_in_time_outlier_in_view(plot, after):
+    rows, t_out = _session_with_outlier(after)
+    plot.set_traces(rows)
+    plot.enableAutoRange()
+    QTest.qWait(100)
+    _assert_outlier_visible_and_bulk_framed(plot, t_out)
+
+
+def test_mean_line_does_not_pull_the_auto_range(plot):
+    rows, t_out = _session_with_outlier(True)
+    plot.set_traces(rows)
+    plot.set_mean_line(525.0)
+    plot.autoRange()
+    _settle(plot)
+    _assert_outlier_visible_and_bulk_framed(plot, t_out)
+
+
+# ── F2: a box dragged past the view edge stops at the edge ───────────────────
+
+N_MANY = 401
+
+
+def _many_rows():
+    values = [float(v) for v in np.linspace(190, 210, N_MANY)]
+    rows = [_row(i, v, time_s=T0 + i * HOUR) for i, v in enumerate(values)]
+    return rows, values
+
+
+def _selected(plot, rows, values):
+    from smfs_catalog.invols_stats import points_in_box
+    times = [r.time_s for r in rows]
+    mask = points_in_box(times, values, plot.box())
+    return np.asarray(times)[mask], np.asarray(values)[mask]
+
+
+@pytest.mark.parametrize("overshoot", [15, -15], ids=["below", "above"])
+def test_box_dragged_past_the_y_edge_is_limited_to_the_view(plot, overshoot):
+    rows, values = _many_rows()
+    plot.set_traces(rows)
+    plot.setXRange(T0, T0 + (N_MANY - 1) * HOUR, padding=0)
+    plot.setYRange(198, 200, padding=0)
+    _settle(plot)
+    ylo, yhi = _view_y(plot)
+    start = _at(plot, T0 + 100 * HOUR, 199)
+    edge = _at(plot, T0 + 200 * HOUR, ylo if overshoot > 0 else yhi)
+    _drag(plot, start, QPoint(edge.x(), edge.y() + overshoot))
+    assert plot.box() is not None
+    assert plot.box()[2] >= ylo - 1e-6 and plot.box()[3] <= yhi + 1e-6
+    _, picked = _selected(plot, rows, values)
+    assert len(picked) > 0
+    assert picked.min() >= ylo - 1e-6 and picked.max() <= yhi + 1e-6
+
+
+@pytest.mark.parametrize("side", ["left", "right"])
+def test_box_dragged_past_the_time_edge_is_limited_to_the_view(plot, side):
+    rows, values = _many_rows()
+    plot.set_traces(rows)
+    plot.setXRange(T0 + 100 * HOUR, T0 + 300 * HOUR, padding=0)
+    plot.setYRange(189, 211, padding=0)
+    _settle(plot)
+    (xlo, xhi), _ = plot.getViewBox().viewRange()
+    start = _at(plot, T0 + 200 * HOUR, 200)
+    edge = _at(plot, xlo if side == "left" else xhi, 195)
+    _drag(plot, start, QPoint(edge.x() + (-15 if side == "left" else 15), edge.y()))
+    box = plot.box()
+    assert box is not None
+    assert box[0] >= xlo - 1.0 and box[1] <= xhi + 1.0
+    picked, _ = _selected(plot, rows, values)
+    assert len(picked) > 0
+    assert picked.min() >= xlo - 1.0 and picked.max() <= xhi + 1.0
+
+
+def test_commit_box_from_code_keeps_limits_beyond_the_view(plot):
+    plot.set_traces(_rows([199.0, 200.0, 201.0]))
+    plot.setYRange(198, 200, padding=0)
+    _settle(plot)
+    plot.commit_box(T0 - 5 * HOUR, T0 + 50 * HOUR, 100, 300)
+    assert plot.box() == (T0 - 5 * HOUR, T0 + 50 * HOUR, 100.0, 300.0)
+
+
+def test_drag_that_returns_to_its_start_keeps_the_earlier_box(plot):
+    _prepare_for_drag(plot)
+    plot.commit_box(T0, T0 + HOUR, 10, 20)
+    box = plot.box()
+    spy = _Spy(plot.box_drawn)
+    p = _at(plot, T0 + 2 * HOUR, 20)
+    _send(plot, QEvent.Type.MouseButtonPress, p, LEFT, LEFT)
+    out = QPoint(p.x() + 10, p.y() + 10)
+    _send(plot, QEvent.Type.MouseMove, out, Qt.MouseButton.NoButton, LEFT)
+    _send(plot, QEvent.Type.MouseMove, p, Qt.MouseButton.NoButton, LEFT)
+    _send(plot, QEvent.Type.MouseButtonRelease, p, LEFT, Qt.MouseButton.NoButton)
+    assert plot.box() == box
+    assert spy.calls == []
+
+
+# ── F3: one click and the double click agree on the topmost mark ─────────────
+
+def _overlapping_marks(plot):
+    """An ordinary point and an outlier marker at the same time and the same
+    pixel.  Returns (pixel, index of the topmost mark)."""
+    values = [float(v) for v in np.linspace(199, 201, 29)]
+    rows = [_row(i, v) for i, v in enumerate(values)]
+    rows.append(_row(29, 9957.0, time_s=rows[28].time_s))
+    plot.set_traces(rows)
+    marker_y = []
+    for hi in (201.5, 203.0):
+        plot.setYRange(199.0, hi, padding=0)
+        _settle(plot)
+        marker_y.append(_markers(plot)[0][1].pos().y())
+    slope = (marker_y[1] - marker_y[0]) / (203.0 - 201.5)
+    plot.setYRange(199.0, 201.5 + (values[28] - marker_y[0]) / slope, padding=0)
+    _settle(plot)
+    marker = _markers(plot)[0][1]
+    assert marker.pos().y() == pytest.approx(values[28], abs=1e-6)
+    pixel = _at(plot, rows[28].time_s, values[28])
+    scene = plot.mapToScene(pixel)
+    found = {}
+    for sc in _scatters(plot):
+        pts = sc.pointsAt(sc.mapFromScene(scene))
+        if len(pts):
+            found[sc] = int(pts[0].data()["index"])
+    assert sorted(found.values()) == [28, 29], "test set-up: marks must overlap"
+    top = next(it for it in plot.scene().items(scene)
+               if isinstance(it, pg.ScatterPlotItem))
+    return pixel, found[top]
+
+
+def test_fast_click_on_overlapping_marks_selects_the_topmost(plot):
+    pixel, top = _overlapping_marks(plot)
+    spy = _Spy(plot.point_selected)
+    QTest.mouseClick(plot.viewport(), LEFT, pos=pixel)
+    QApplication.processEvents()
+    assert spy.calls == [(top,)]
+
+
+def test_slow_click_on_overlapping_marks_selects_the_topmost(plot):
+    pixel, top = _overlapping_marks(plot)
+    spy = _Spy(plot.point_selected)
+    _send(plot, QEvent.Type.MouseButtonPress, pixel, LEFT, LEFT)
+    QTest.qWait(650)
+    moved = QPoint(pixel.x() + 1, pixel.y())
+    _send(plot, QEvent.Type.MouseMove, moved, Qt.MouseButton.NoButton, LEFT)
+    _send(plot, QEvent.Type.MouseButtonRelease, moved, LEFT, Qt.MouseButton.NoButton)
+    assert spy.calls == [(top,)]
+
+
+def test_double_click_sequence_on_overlapping_marks_agrees_on_the_topmost(plot):
+    pixel, top = _overlapping_marks(plot)
+    picked, opened = _Spy(plot.point_selected), _Spy(plot.point_opened)
+    _send(plot, QEvent.Type.MouseButtonPress, pixel, LEFT, LEFT)
+    _send(plot, QEvent.Type.MouseButtonRelease, pixel, LEFT, Qt.MouseButton.NoButton)
+    _send(plot, QEvent.Type.MouseButtonDblClick, pixel, LEFT, LEFT)
+    _send(plot, QEvent.Type.MouseButtonRelease, pixel, LEFT, Qt.MouseButton.NoButton)
+    assert picked.calls == [(top,)]
+    assert opened.calls == [(top,)]
+
+
+# ── a real, paced left drag on an axis pans and draws no box ─────────────────
+
+def _paced_drag(plot, start, end, pace_ms=25):
+    _send(plot, QEvent.Type.MouseButtonPress, start, LEFT, LEFT)
+    QTest.qWait(pace_ms)
+    dx, dy = end.x() - start.x(), end.y() - start.y()
+    for frac in (0.1, 0.5, 1.0):
+        pos = QPoint(start.x() + int(dx * frac), start.y() + int(dy * frac))
+        _send(plot, QEvent.Type.MouseMove, pos, Qt.MouseButton.NoButton, LEFT)
+        QTest.qWait(pace_ms)
+    _send(plot, QEvent.Type.MouseButtonRelease, end, LEFT, Qt.MouseButton.NoButton)
+
+
+@pytest.mark.parametrize("axis, name, step",
+                         [(1, "left", (0, 40)), (0, "bottom", (40, 0))])
+def test_real_paced_left_drag_on_an_axis_pans_and_draws_no_box(plot, axis, name, step):
+    _prepare_for_drag(plot)
+    plot.commit_box(T0, T0 + HOUR, 10, 20)
+    box, before = plot.box(), plot.getViewBox().viewRange()
+    spy = _Spy(plot.box_drawn)
+    start = _axis_centre(plot, name)
+    _paced_drag(plot, start, QPoint(start.x() + step[0], start.y() + step[1]))
+    tol = (1.0, 1e-6)
+    after = plot.getViewBox().viewRange()
+    assert plot.box() == box and spy.calls == []
+    assert after[axis] != pytest.approx(before[axis], abs=tol[axis])
+    assert after[1 - axis] == pytest.approx(before[1 - axis], abs=tol[1 - axis])
