@@ -20,10 +20,11 @@ HistGrid is frozen, like PR (c)'s parameter objects (CacheContext etc.), and
 its ranges are tuples.
 
 Three layers:
-  * interface tests (fail until d2 is built);
-  * byte-identity and behaviour pins, written through the small adapter below
-    against today's keyword API (they pass now; at d2 only the adapter's four
-    bodies change to the HistGrid form shown in each comment);
+  * interface tests: HistGrid, the planned signatures, the deleted function;
+  * byte-identity and behaviour pins: the key strings are literals recorded
+    from the code before d2, and the histograms are small hand-checked arrays;
+    they go through the small adapter below, the only place that spells out
+    how the HistGrid is built from the loose values;
   * a size guard on the changed functions.
 """
 import ast
@@ -40,8 +41,7 @@ from size_limits import violations
 PKG = Path(ep.__file__).resolve().parent
 
 
-# ── adapter: the only place that knows today's keyword API ───────────────────
-# Bodies use the HistGrid API (switched when d2 landed).
+# ── adapter: takes loose values, builds the HistGrid, calls the d2 API ───────
 
 def _phys_key(f_star, x_bins, f_bins, x_range, f_range, align_mode, align_segment):
     return ep._phys_grid_params(
@@ -253,3 +253,13 @@ def test_physical_grid_dialog_init_is_within_the_other_limits():
     found = violations("_PhysicalGridDialog.__init__",
                        _init(physical_2dh_window, "_PhysicalGridDialog"))
     assert [v for v in found if "arguments" not in v] == []
+
+
+# ── the window builds its HistGrid from its own attributes ───────────────────
+
+def test_window_hist_grid_is_built_from_the_window_attributes_in_order():
+    from types import SimpleNamespace
+    stand_in = SimpleNamespace(
+        _x_bins=7, _f_bins=9, _x_min=-1.5, _x_max=2.5, _f_min=-3.0, _f_max=8.0)
+    grid = base_2dh_window._TwoDHWindowBase._hist_grid.fget(stand_in)
+    assert grid == ep.HistGrid(7, 9, (-1.5, 2.5), (-3.0, 8.0))
