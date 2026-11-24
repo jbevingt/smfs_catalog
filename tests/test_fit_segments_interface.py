@@ -145,8 +145,9 @@ def _guard_case():
 
 
 def _run_fit(curve, events) -> None:
-    """The one place this file calls fit_segments with the old signature."""
-    fit_segments(curve, events, 0.0, 1.0, 0.0, low_retr=curve.defl_retr)
+    """The one place this file calls fit_segments."""
+    fit_segments(curve, events, roi_events.SegmentCalibration(
+        0.0, 1.0, 0.0, low_retr=curve.defl_retr))
 
 
 def test_fewer_than_five_positive_points_is_refused_and_the_next_segment_sees_its_force():
