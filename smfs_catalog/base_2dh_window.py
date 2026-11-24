@@ -57,6 +57,7 @@ from . import quantities as _quant
 from . import export_utils as _export
 from . import ledger as _ledger
 from .db import write_event_histograms_bulk
+from .event_processor import HistGrid
 from .curve_loader import LoadError, load_force_curve
 from . import style
 from .qt_utils import (
@@ -101,8 +102,7 @@ class _GridDialog(QDialog):
     _TITLE = "Grid settings"
     _WARN_COLOR = style.TEXT_WARNING
 
-    def __init__(self, parent, x_bins, f_bins, x_min, x_max, f_min, f_max,
-                 align_segment, defaults):
+    def __init__(self, parent, grid, align_segment, defaults):
         super().__init__(parent)
         self.setWindowTitle(self._TITLE)
         self.setModal(True)
@@ -115,16 +115,27 @@ class _GridDialog(QDialog):
             self._WARN_COLOR, selector="QGroupBox"))
         self._form = QFormLayout(box)
 
+        self._add_bins_and_range_rows(grid)
+        self._add_segment_row(align_segment)
+        self._add_extra_rows()
+
+        warn = QLabel("⚠  Changing these settings invalidates all cached 2DHs.")
+        warn.setStyleSheet(f"color: {self._WARN_COLOR};")
+        self._form.addRow(warn)
+        root.addWidget(box)
+        root.addWidget(self._make_buttons())
+
+    def _add_bins_and_range_rows(self, grid) -> None:
         self._xb = QComboBox()
         self._fb = QComboBox()
         for lbl in _BINS_CHOICES:
             self._xb.addItem(lbl)
             self._fb.addItem(lbl)
-        self._xb.setCurrentText(str(x_bins))
-        self._fb.setCurrentText(str(f_bins))
+        self._xb.setCurrentText(str(grid.x_bins))
+        self._fb.setCurrentText(str(grid.f_bins))
 
         self._x_min, self._x_max, self._f_min, self._f_max = self._make_range_spins(
-            x_min, x_max, f_min, f_max)
+            *grid.x_range, *grid.f_range)
 
         x_row = QHBoxLayout()
         x_row.addWidget(QLabel("min")); x_row.addWidget(self._x_min)
@@ -141,6 +152,7 @@ class _GridDialog(QDialog):
         self._form.addRow(self._x_range_label(), x_row)
         self._form.addRow(self._f_range_label(), f_row)
 
+    def _add_segment_row(self, align_segment) -> None:
         self._seg = QComboBox()
         for lbl, key in _ALIGN_SEG_CHOICES:
             self._seg.addItem(lbl, key)
@@ -148,13 +160,7 @@ class _GridDialog(QDialog):
         self._seg.setCurrentIndex(j if j >= 0 else 0)
         self._form.addRow("Segment:", self._seg)
 
-        self._add_extra_rows()
-
-        warn = QLabel("⚠  Changing these settings invalidates all cached 2DHs.")
-        warn.setStyleSheet(f"color: {self._WARN_COLOR};")
-        self._form.addRow(warn)
-        root.addWidget(box)
-
+    def _make_buttons(self) -> QDialogButtonBox:
         btns = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Reset |
             QDialogButtonBox.StandardButton.Cancel |
@@ -163,7 +169,7 @@ class _GridDialog(QDialog):
         btns.button(QDialogButtonBox.StandardButton.Apply).clicked.connect(self.accept)
         btns.button(QDialogButtonBox.StandardButton.Cancel).clicked.connect(self.reject)
         btns.button(QDialogButtonBox.StandardButton.Reset).clicked.connect(self._reset)
-        root.addWidget(btns)
+        return btns
 
     # ── Hooks for _PhysicalGridDialog ───────────────────────────────────────
 
@@ -491,6 +497,11 @@ class _TwoDHWindowBase(QMainWindow):
         self._refresh_provenance_caption()
         self._after_grid_settings_applied()
         self._on_rebuild()
+
+    @property
+    def _hist_grid(self) -> HistGrid:
+        return HistGrid(self._x_bins, self._f_bins,
+                        (self._x_min, self._x_max), (self._f_min, self._f_max))
 
     def _make_grid_dialog(self) -> _GridDialog:
         raise NotImplementedError

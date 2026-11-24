@@ -73,12 +73,11 @@ class _PhysicalGridDialog(_GridDialog):
 
     _TITLE = "Physical grid settings"
 
-    def __init__(self, parent, x_bins, f_bins, x_min, x_max, f_min, f_max,
-                 align_segment, f_star, align_mode, defaults):
+    def __init__(self, parent, grid, align_segment, f_star, align_mode,
+                 defaults):
         self._f_star_init    = f_star
         self._align_mode_init = align_mode
-        super().__init__(parent, x_bins, f_bins, x_min, x_max, f_min, f_max,
-                          align_segment, defaults)
+        super().__init__(parent, grid, align_segment, defaults)
 
     def _x_bins_label(self) -> str:
         return "X bins (Δx):"
@@ -170,12 +169,8 @@ class Physical2DHWindow(_TwoDHWindowBase):
     @property
     def _grid_key(self) -> str:
         return _phys_grid_params(
-            self._f_star,
-            x_bins=self._x_bins, f_bins=self._f_bins,
-            x_range=(self._x_min, self._x_max),
-            f_range=(self._f_min, self._f_max),
-            align_mode=self._align_mode, align_segment=self._align_segment,
-        )
+            self._f_star, self._hist_grid,
+            self._align_mode, self._align_segment)
 
     def _axis_labels(self) -> tuple[tuple[str, str], tuple[str, str]]:
         desc = _ALIGN_MODE_ANCHOR_DESC.get(self._align_mode, self._align_mode)
@@ -184,8 +179,7 @@ class Physical2DHWindow(_TwoDHWindowBase):
 
     def _make_grid_dialog(self) -> _PhysicalGridDialog:
         return _PhysicalGridDialog(
-            self, self._x_bins, self._f_bins, self._x_min, self._x_max,
-            self._f_min, self._f_max, self._align_segment,
+            self, self._hist_grid, self._align_segment,
             self._f_star, self._align_mode,
             defaults={
                 "x_bins": PHYS_X_BINS, "f_bins": PHYS_F_BINS,
@@ -284,12 +278,7 @@ class Physical2DHWindow(_TwoDHWindowBase):
         anchor = self._compute_anchor(x, F, lo, hi, fit, right_idx)
         if anchor is None:
             return None
-        return compute_physical_histogram_at(
-            x, F, anchor,
-            x_bins=self._x_bins, f_bins=self._f_bins,
-            x_range=(self._x_min, self._x_max),
-            f_range=(self._f_min, self._f_max),
-        )
+        return compute_physical_histogram_at(x, F, anchor, self._hist_grid)
 
     def _build_overlay_xF(self, x, F, lo, hi, fit, right_idx):
         anchor = self._compute_anchor(x, F, lo, hi, fit, right_idx)
